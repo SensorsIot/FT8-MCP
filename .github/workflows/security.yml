@@ -1,0 +1,40 @@
+name: Security Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check-forbidden-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Check for forbidden files
+        run: |
+          forbidden_patterns=(
+            ".env"
+            ".env.local"
+            "*.pem"
+            "*.key"
+            "id_rsa"
+            "secrets.json"
+            ".gemini/"
+            ".antigravity/"
+            ".claude/"
+          )
+
+          found_forbidden=0
+          for pattern in "${forbidden_patterns[@]}"; do
+            if find . -name "$pattern" -print -quit | grep -q .; then
+              echo "::error::Forbidden file or directory found matching pattern: $pattern"
+              find . -name "$pattern"
+              found_forbidden=1
+            fi
+          done
+
+          if [ $found_forbidden -eq 1 ]; then
+            exit 1
+          fi

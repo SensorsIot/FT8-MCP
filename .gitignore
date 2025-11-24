@@ -1,0 +1,25 @@
+# Credentials and Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.cert
+*.crt
+id_rsa
+id_rsa.pub
+secrets.json
+credentials.json
+
+# AI and Tooling Artifacts
+.gemini/
+.antigravity/
+.claude/
+.codex/
+.copilot/
+.cursor/
+.vscode/
+.idea/
+*.log
+tmp/
+temp/
