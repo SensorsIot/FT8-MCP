@@ -17,6 +17,84 @@ export class WsjtxMcpServer {
             name: config.mcp.name,
             version: config.mcp.version,
         });
+
+        this.setupTools();
+        this.setupResources();
+    }
+
+    private setupTools() {
+        // Tool: start_instance
+        this.server.tool(
+            "start_instance",
+            {
+                name: z.string().describe("Friendly name for the instance"),
+                band: z.string().optional().describe("Target band (e.g., '20m')"),
+                rigName: z.string().optional().describe("Rig name configuration"),
+            },
+            async ({ name, band, rigName }) => {
+                if (this.config.mode !== 'STANDARD') {
+                    return {
+                        content: [{ type: "text", text: "Error: Manual start_instance is only available in STANDARD mode." }],
+                        isError: true,
+                    };
+                }
+
+                try {
+                    this.wsjtxManager.startInstance({ name, band, rigName });
+                    return {
+                        content: [{ type: "text", text: `Started WSJT-X instance: ${name}` }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{ type: "text", text: `Error: ${error}` }],
+                        isError: true,
+                    };
+                }
+            }
+        );
+
+        // Tool: stop_instance
+        this.server.tool(
+            "stop_instance",
+            {
+                name: z.string().describe("Friendly name of the instance"),
+            },
+            async ({ name }) => {
+                const success = this.wsjtxManager.stopInstance(name);
+                if (success) {
+                    return {
+                        content: [{ type: "text", text: `Stopped instance ${name}` }],
+                    };
+                } else {
+                    return {
+                        content: [{ type: "text", text: `Instance ${name} not found` }],
+                        isError: true,
+                    };
+                }
+            }
+        );
+    }
+
+    private setupResources() {
+        // Resource: List instances
+        this.server.resource(
+            "instances",
+            "wsjt-x://instances",
+            async (uri) => {
+                const instances = this.wsjtxManager.getInstances();
+                return {
+                    contents: [{
+                        uri: uri.href,
+                        text: JSON.stringify(instances, null, 2),
+                        mimeType: "application/json",
+                    }],
+                };
+            }
+        );
+    }
+
+    public async start() {
+        const transport = new StdioServerTransport();
         await this.server.connect(transport);
         console.error("MCP Server started on stdio");
     }
