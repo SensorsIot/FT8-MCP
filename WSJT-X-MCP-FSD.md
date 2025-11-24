@@ -15,8 +15,8 @@ The system will:
     - Select specific stations to call.
     - **Full Automation**: Manage the entire QSO sequence (Tx1 -> Tx2 -> 73) autonomously.
 - **Platform Support**:
-    - **Raspberry Pi**: Fully supported as a target platform.
-    - **Windows**: Supported for development and usage.
+    - **Windows**: **Primary Platform**. Fully supported for development and production.
+    - **Raspberry Pi**: Supported as a secondary/alternative target platform.
 - **Installation**:
     - Simple installation procedure (e.g., single binary or simple script).
 
