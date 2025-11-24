@@ -94,17 +94,22 @@ The system will:
     - Execute CQ calls.
     - Select specific stations to call.
     - **Full Automation**: Manage the entire QSO sequence (Tx1 -> Tx2 -> 73) autonomously.
-- **Platform Support**:
-    - **Windows**: **Primary Platform**. Fully supported for development and production.
-    - **Raspberry Pi**: Supported as a secondary/alternative target platform.
+- **Rig Support**:
+    - **FlexRadio SmartSDR**: The system is explicitly designed to interface with FlexRadio systems via SmartSDR.
+- **Dynamic Configuration (Slice Master-like)**:
+    - **Auto-Discovery**: Detect active "Slices" (receivers) on the FlexRadio.
+    - **Auto-Launch**: Automatically spawn and configure a WSJT-X instance for each active digital slice.
+    - **Sync**: Keep WSJT-X frequency/mode in sync with the FlexRadio slice.
 - **Installation**:
     - Simple installation procedure (e.g., single binary or simple script).
 
 ## 3. Architecture
 - **Co-location Requirement**: The **MCP Server** and all **WSJT-X Instances** MUST run on the same physical machine (e.g., Raspberry Pi or PC). The **AI Agent (LLM)** can be remote.
-- **WSJT-X Instances**: Multiple instances running on the local machine.
+- **Inputs**:
+    - **FlexRadio**: Connects to the radio (TCP/UDP) to monitor Slices.
+    - **WSJT-X**: Connects to instances (UDP) for decoding/control.
 - **MCP Server**: A central server (Node.js) running on the local machine that:
-    - Manages local WSJT-X processes (start/stop).
+    - **Orchestrator**: Monitors FlexRadio state and manages WSJT-X processes (Slice Master logic).
     - Aggregates UDP traffic from localhost.
     - Implements the QSO state machine.
     - Exposes data via MCP (Stdio or SSE).
