@@ -73,6 +73,30 @@ export class WsjtxMcpServer {
                 }
             }
         );
+
+        // Tool: execute_qso
+        this.server.tool(
+            "execute_qso",
+            {
+                instanceId: z.string().describe("Instance ID (rig name)"),
+                targetCallsign: z.string().describe("Target station callsign"),
+                myCallsign: z.string().describe("Your callsign"),
+                myGrid: z.string().describe("Your grid locator (e.g., 'FN20')"),
+            },
+            async ({ instanceId, targetCallsign, myCallsign, myGrid }) => {
+                try {
+                    this.wsjtxManager.executeQso(instanceId, targetCallsign, myCallsign, myGrid);
+                    return {
+                        content: [{ type: "text", text: `Started autonomous QSO with ${targetCallsign}` }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{ type: "text", text: `Error: ${error}` }],
+                        isError: true,
+                    };
+                }
+            }
+        );
     }
 
     private setupResources() {
