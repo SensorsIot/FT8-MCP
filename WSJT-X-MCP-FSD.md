@@ -54,7 +54,22 @@ The following capabilities are exposed to the AI Agent:
 - **Execute Full QSO**: **(Autonomous)** Trigger a "fire-and-forget" QSO sequence where the MCP server manages the standard FT8/FT4 exchange (Tx1 -> Tx2 -> Tx3 -> Tx4 -> Tx5 -> 73) automatically.
 - **Halt Transmission**: Emergency stop of any active transmission.
 
-## 5. MCP Resources
+## 5. Operation Modes
+
+### 5.1. Mode A: FlexRadio (Advanced)
+*Functionality copied from Slice Master.*
+- **Dynamic Slice Monitoring**: Connects to FlexRadio (Vita49) to detect open Slices.
+- **Auto-Launch**: Automatically spawns WSJT-X instances for each digital slice.
+- **Configuration Sync**: Syncs DAX/CAT settings automatically.
+
+### 5.2. Mode B: Standard (Basic)
+*Traditional control for standard transceivers.*
+- **Target Rig**: Default configuration is for **IC-7300**, but configurable for others.
+- **Manual/AI Setup**: The AI (or user) specifies the band and rig parameters.
+- **Single Instance**: Typically manages one WSJT-X instance connected to the radio.
+- **Use Case**: Users without FlexRadio hardware who want AI control of their station.
+
+## 6. MCP Resources
 - `wsjt-x://instances`: List of managed instances (Friendly Name, Status, Frequency).
 - `wsjt-x://{name}/decodes`: Stream of decoded messages for a specific instance.
 - `wsjt-x://{name}/status`: Detailed status of a specific instance.
@@ -94,22 +109,21 @@ The system will:
     - Execute CQ calls.
     - Select specific stations to call.
     - **Full Automation**: Manage the entire QSO sequence (Tx1 -> Tx2 -> 73) autonomously.
-- **Rig Support**:
-    - **FlexRadio SmartSDR**: The system is explicitly designed to interface with FlexRadio systems via SmartSDR.
-- **Dynamic Configuration (Slice Master-like)**:
-    - **Auto-Discovery**: Detect active "Slices" (receivers) on the FlexRadio.
-    - **Auto-Launch**: Automatically spawn and configure a WSJT-X instance for each active digital slice.
-    - **Sync**: Keep WSJT-X frequency/mode in sync with the FlexRadio slice.
+- **Operation Modes**:
+    - **Mode A: FlexRadio (Advanced)**: Dynamic "Slice Master" style integration for FlexRadio SmartSDR.
+    - **Mode B: Standard (Basic)**: Direct control of a single radio (default: **IC-7300**) via standard WSJT-X configuration.
 - **Installation**:
     - Simple installation procedure (e.g., single binary or simple script).
 
 ## 3. Architecture
-- **Co-location Requirement**: The **MCP Server** and all **WSJT-X Instances** MUST run on the same physical machine (e.g., Raspberry Pi or PC). The **AI Agent (LLM)** can be remote.
+- **Co-location Requirement**: The **MCP Server** and all **WSJT-X Instances** MUST run on the same physical machine.
 - **Inputs**:
-    - **FlexRadio**: Connects to the radio (TCP/UDP) to monitor Slices.
+    - **FlexRadio (Mode A)**: Connects to the radio (TCP/UDP) to monitor Slices.
     - **WSJT-X**: Connects to instances (UDP) for decoding/control.
 - **MCP Server**: A central server (Node.js) running on the local machine that:
-    - **Orchestrator**: Monitors FlexRadio state and manages WSJT-X processes (Slice Master logic).
+    - **Orchestrator**: 
+        - *FlexRadio Mode*: Monitors FlexRadio state and manages WSJT-X processes dynamically.
+        - *Standard Mode*: Manages a single WSJT-X instance based on user/AI configuration.
     - Aggregates UDP traffic from localhost.
     - Implements the QSO state machine.
     - Exposes data via MCP (Stdio or SSE).
@@ -144,7 +158,7 @@ The following capabilities are exposed to the AI Agent:
 - `wsjt-x://{name}/decodes`: Stream of decoded messages for a specific instance.
 - `wsjt-x://{name}/status`: Detailed status of a specific instance.
 
-## 6. MCP Tools
+## 7. MCP Tools
 All tools will use `instance_name` (friendly name) to target the correct WSJT-X instance.
 
 ### Process Management
@@ -158,7 +172,7 @@ All tools will use `instance_name` (friendly name) to target the correct WSJT-X 
 - `execute_qso(name: string, target_callsign: string)`: **Autonomous**. Initiates and manages the full QSO sequence until 73 is sent/received.
 - `halt_tx(name: string)`: Stop transmission immediately.
 
-## 6. Technical Requirements
+## 8. Technical Requirements
 - **Language**: **Node.js (TypeScript)**.
     - *Rationale*: Native support for MCP SDK, excellent async I/O for handling multiple UDP streams, and easy cross-compilation to single binaries (using `pkg` or `bun`) for Raspberry Pi and Windows.
 - **UDP Listener**: Handle WSJT-X QQT encoding (Qt's `QDataStream`).
@@ -169,21 +183,21 @@ All tools will use `instance_name` (friendly name) to target the correct WSJT-X 
     - Provide pre-built binaries for Windows (x64) and Raspberry Pi (ARM64).
     - `npm` based installation for developers.
 
-## 7. User Interface
+## 9. User Interface
 The system will provide a **Local Web Dashboard** for visualization and manual control.
 
-### 7.1. Concept
+### 9.1. Concept
 A lightweight web server hosted by the MCP application (e.g., `http://localhost:3000`), accessible via any modern web browser.
 
-### 7.2. Features
+### 9.2. Features
 - **Mission Control**: Unified view of all connected WSJT-X instances.
 - **Live Status Cards**: Real-time display of Frequency, Mode, SNR, and Tx/Rx state per instance.
 - **Configuration Panel**: Form to launch new instances and configure global settings.
 - **Action Log**: A scrolling log showing AI actions and system events.
 
-### 7.3. Technology
+### 9.3. Technology
 - **Frontend**: React + Vite + Tailwind CSS.
 - **Communication**: WebSockets for real-time state updates.
 
-## 8. Open Questions
+## 10. Open Questions
 - None. Requirements clarified.

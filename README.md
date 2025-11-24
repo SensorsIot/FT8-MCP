@@ -19,8 +19,9 @@ The **WSJT-X MCP Server** bridges the gap between modern AI agents (like Claude,
 - **📻 Multi-Instance Support**: Control multiple radios/bands simultaneously from a single AI session.
 - **⚡ Autonomous QSOs**: "Fire-and-forget" QSO automation—tell the AI to "work that station," and the server handles the Tx sequence (Tx1-Tx5 -> 73).
 - **💻 Windows Native**: Designed primarily for Windows, with optional support for Raspberry Pi.
-- **📻 FlexRadio Optimized**: Built specifically for **SmartSDR** integration.
-- **🔗 Slice Master Integration**: Automatically detects active FlexRadio slices and launches WSJT-X instances for them.
+- **🔄 Dual Operation Modes**:
+    - **FlexRadio Mode**: "Slice Master" style auto-launch for SmartSDR.
+    - **Standard Mode**: Direct control for standard rigs (default: **IC-7300**).
 - **🖥️ Web Dashboard**: Premium "Mission Control" web interface for real-time monitoring and manual override.
 - **🔊 Live Monitoring**: Stream decoded messages and signal reports directly to the AI context.
 
