@@ -1,7 +1,6 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 body {
-  @apply bg-gray-900 text-white;
+  background-color: #111827;
+  color: white;
 }
