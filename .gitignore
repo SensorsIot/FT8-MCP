@@ -21,6 +21,8 @@ dist/
 .gemini/
 .antigravity/
 .claude/
+CLAUDE.md
+GEMINI.md
 .codex/
 .copilot/
 .cursor/
