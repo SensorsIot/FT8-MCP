@@ -7,27 +7,148 @@ import { ProcessManager, WsjtxInstanceConfig } from './ProcessManager';
 import { QsoStateMachine, QsoConfig } from './QsoStateMachine';
 import { SliceMasterLogic } from './SliceMasterLogic';
 import { StationTracker } from './StationTracker';
+import {
+    StateManager,
+    ChannelUdpManager,
+    QsoManager,
+    McpState,
+    DecodeRecord,
+    QsoRecord,
+} from '../state';
 
 export class WsjtxManager extends EventEmitter {
     private config: Config;
     private instances: Map<string, any> = new Map();
-    private udpListener: WsjtxUdpListener;
+    private udpListener: WsjtxUdpListener;  // Legacy single-port listener (STANDARD mode)
     private udpSender: UdpSender;
     private processManager: ProcessManager;
     private activeQsos: Map<string, QsoStateMachine> = new Map();
     private sliceMaster?: SliceMasterLogic;
     private stationTracker: StationTracker;
 
+    // New state management (Phase 1)
+    private stateManager: StateManager;
+    private channelUdpManager: ChannelUdpManager;
+    private qsoManager: QsoManager;
+
     constructor(config: Config) {
         super();
         this.config = config;
+
+        // Initialize new state management
+        this.stateManager = new StateManager({
+            callsign: config.station.callsign,
+            grid: config.station.grid,
+            decodeHistoryMinutes: 15,
+            stationLifetimeSeconds: config.dashboard?.stationLifetimeSeconds ?? 120,
+        });
+
+        this.channelUdpManager = new ChannelUdpManager(
+            this.stateManager,
+            config.station.callsign
+        );
+
+        // Initialize QSO Manager for ADIF logging (Phase 1.5)
+        this.qsoManager = new QsoManager(this.stateManager, {
+            stationCallsign: config.station.callsign,
+            stationGrid: config.station.grid,
+            // logbookPath: can be configured via config.logbook?.path in future
+        });
+
+        // Legacy components (still used in STANDARD mode and for backward compatibility)
         this.udpListener = new WsjtxUdpListener(2237);
         this.udpSender = new UdpSender(2237);
         this.processManager = new ProcessManager();
         this.stationTracker = new StationTracker(config);
+
         this.setupListeners();
+        this.setupStateListeners();
     }
 
+    /**
+     * Setup listeners for the new state management system
+     */
+    private setupStateListeners(): void {
+        // Forward state changes to external listeners
+        this.stateManager.on('state-changed', (state: McpState) => {
+            this.emit('state-changed', state);
+        });
+
+        // Forward decodes from ChannelUdpManager to QSO state machines and external listeners
+        this.channelUdpManager.on('decode', (decode: DecodeRecord) => {
+            // Convert DecodeRecord to WsjtxDecode for backward compatibility
+            const wsjtxDecode: WsjtxDecode = {
+                id: decode.slice_id,
+                newDecode: decode.new_decode,
+                time: 0,  // Not available in DecodeRecord timestamp format
+                snr: decode.snr_db,
+                deltaTime: decode.dt_sec,
+                deltaFrequency: decode.audio_offset_hz,
+                mode: decode.mode,
+                message: decode.raw_text,
+                lowConfidence: decode.low_confidence,
+                offAir: decode.off_air,
+            };
+
+            // Forward to station tracker for dashboard
+            this.stationTracker.handleDecode(wsjtxDecode);
+
+            // Forward to active QSO state machines
+            const qso = this.activeQsos.get(decode.slice_id);
+            if (qso) {
+                qso.handleDecode(wsjtxDecode);
+            }
+
+            this.emit('decode', decode);
+        });
+
+        // Forward status updates
+        this.channelUdpManager.on('status', (status: any) => {
+            // Convert to WsjtxStatus for backward compatibility
+            const wsjtxStatus: WsjtxStatus = {
+                id: `Slice-${String.fromCharCode(65 + status.channelIndex)}`,
+                dialFrequency: status.dialFrequency,
+                mode: status.mode,
+                dxCall: status.dxCall || '',
+                report: status.report || '',
+                txMode: status.txMode || status.mode,
+                txEnabled: status.txEnabled,
+                transmitting: status.transmitting,
+                decoding: status.decoding,
+                rxDF: status.rxDF,
+                txDF: status.txDF,
+                deCall: '',
+                deGrid: '',
+                dxGrid: '',
+                txWatchdog: false,
+                subMode: '',
+                fastMode: false,
+                specialOpMode: 0,
+                frequencyTolerance: 0,
+                trPeriod: 0,
+                configurationName: '',
+            };
+
+            this.stationTracker.handleStatus(wsjtxStatus);
+            this.emit('status', status);
+        });
+
+        // Forward QSO logged events to QsoManager for ADIF writing
+        this.channelUdpManager.on('qso-logged', (qso: QsoRecord) => {
+            // Write to ADIF logbook (this also updates WorkedIndex in StateManager)
+            this.qsoManager.logQso(qso);
+            this.emit('qso-logged', qso);
+        });
+
+        // Forward heartbeats
+        this.channelUdpManager.on('heartbeat', (data: { channelIndex: number; id: string }) => {
+            console.log(`[Channel ${data.channelIndex}] Heartbeat from ${data.id}`);
+        });
+    }
+
+    /**
+     * Legacy listener setup (for STANDARD mode and backward compatibility)
+     */
     private setupListeners() {
         this.udpListener.on('decode', (decode: WsjtxDecode) => {
             console.log(`[${decode.id}] Decode: ${decode.message} (SNR: ${decode.snr})`);
@@ -72,6 +193,16 @@ export class WsjtxManager extends EventEmitter {
     }
 
     public async start(): Promise<void> {
+        // Initialize QSO Manager (loads existing ADIF logbook -> populates WorkedIndex)
+        try {
+            await this.qsoManager.initialize();
+            console.log(`QSO Manager initialized with ${this.qsoManager.getQsoCount()} existing QSOs`);
+            console.log(`Logbook path: ${this.qsoManager.getLogbookPath()}`);
+        } catch (error) {
+            console.error('Failed to initialize QSO Manager:', error);
+            // Continue anyway - QSOs won't be logged to file but everything else works
+        }
+
         if (this.config.mode === 'STANDARD') {
             console.log('Starting WSJT-X Manager in STANDARD mode.');
             // Auto-start a default instance for Standard mode
@@ -88,6 +219,9 @@ export class WsjtxManager extends EventEmitter {
     }
 
     public setFlexClient(flexClient: any): void {
+        // Update StateManager with Flex connection status
+        this.stateManager.setFlexConnected(true);
+
         // Initialize Slice Master logic for FlexRadio mode
         // Pass station config (callsign, grid) for WSJT-X INI configuration
         this.sliceMaster = new SliceMasterLogic(
@@ -98,6 +232,10 @@ export class WsjtxManager extends EventEmitter {
                 grid: this.config.station.grid,
             }
         );
+
+        // Wire up StateManager and ChannelUdpManager to SliceMasterLogic
+        this.sliceMaster.setStateManager(this.stateManager);
+        this.sliceMaster.setChannelUdpManager(this.channelUdpManager);
 
         // Handle slice events from FlexRadio
         flexClient.on('slice-added', (slice: any) => {
@@ -232,6 +370,85 @@ export class WsjtxManager extends EventEmitter {
         this.stationTracker.reloadAdifLog();
     }
 
+    // === New State Management API (Phase 1) ===
+
+    /**
+     * Get full MCP state (FSD §11.1)
+     */
+    public getMcpState(): McpState {
+        return this.stateManager.getState();
+    }
+
+    /**
+     * Get the StateManager instance for direct access
+     */
+    public getStateManager(): StateManager {
+        return this.stateManager;
+    }
+
+    /**
+     * Get recent decodes for a channel (FSD §11.5)
+     */
+    public getDecodes(channelIndex: number, sinceMs?: number): DecodeRecord[] {
+        return this.stateManager.getDecodes(channelIndex, sinceMs);
+    }
+
+    /**
+     * Get all recent decodes across all channels
+     */
+    public getAllDecodes(sinceMs?: number): DecodeRecord[] {
+        return this.stateManager.getAllDecodes(sinceMs);
+    }
+
+    /**
+     * Check if a station is worked on band/mode (FSD §11.6)
+     */
+    public isWorked(call: string, band: string, mode: string): boolean {
+        return this.stateManager.isWorked(call, band, mode);
+    }
+
+    /**
+     * Set TX channel (FSD §11.3)
+     */
+    public setTxChannel(channelIndex: number): void {
+        this.stateManager.setTxChannel(channelIndex);
+    }
+
+    /**
+     * Get QsoManager for logbook access
+     */
+    public getQsoManager(): QsoManager {
+        return this.qsoManager;
+    }
+
+    /**
+     * Get logbook path
+     */
+    public getLogbookPath(): string {
+        return this.qsoManager.getLogbookPath();
+    }
+
+    /**
+     * Get total QSO count from logbook
+     */
+    public getQsoCount(): number {
+        return this.qsoManager.getQsoCount();
+    }
+
+    /**
+     * Export logbook to a new ADIF file
+     */
+    public exportLogbook(outputPath: string): void {
+        this.qsoManager.exportToFile(outputPath);
+    }
+
+    /**
+     * Clear logbook (creates backup first)
+     */
+    public clearLogbook(): void {
+        this.qsoManager.clearLogbook();
+    }
+
     // === WSJT-X UDP Control Methods ===
 
     /**
@@ -343,13 +560,21 @@ export class WsjtxManager extends EventEmitter {
         }
         this.activeQsos.clear();
 
-        // Stop HRD CAT servers
+        // Stop HRD CAT servers and UDP listeners (via SliceMasterLogic)
         if (this.sliceMaster) {
             this.sliceMaster.stopAll();
         }
 
+        // Stop new state management components
+        this.channelUdpManager.stopAll();
+        this.stateManager.stop();
+
+        // Stop legacy components
         this.stationTracker.stop();
         this.processManager.stopAll();
         this.udpListener.stop();
+
+        // Mark Flex as disconnected
+        this.stateManager.setFlexConnected(false);
     }
 }

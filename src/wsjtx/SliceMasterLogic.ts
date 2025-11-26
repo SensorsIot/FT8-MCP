@@ -4,6 +4,7 @@ import { ProcessManager } from './ProcessManager';
 import { positionWsjtxWindows, calculateLayout } from './WindowManager';
 import { configureWideGraph, configureRigForHrdCat, HRD_CAT_BASE_PORT } from './WsjtxConfig';
 import { HrdCatServer } from '../cat/HrdCatServer';
+import { StateManager, ChannelUdpManager, frequencyToBand } from '../state';
 
 // WSJT-X uses ~1.46 Hz per bin for FT8 (sample rate 12000 / 8192 FFT bins)
 const HZ_PER_BIN = 1.4648;
@@ -17,6 +18,11 @@ const HZ_PER_BIN = 1.4648;
  * - We translate HRD commands to FlexRadio API calls
  * - Bidirectional sync: WSJT-X tune -> slice moves, slice tune -> WSJT-X follows
  * - No SmartSDR CAT needed - our HRD TCP shim replaces it
+ *
+ * Now integrated with StateManager and ChannelUdpManager for:
+ * - Unified state tracking (McpState)
+ * - Dynamic per-channel UDP listeners
+ * - Decode aggregation with channel context
  */
 export interface StationConfig {
     callsign?: string;
@@ -31,11 +37,29 @@ export class SliceMasterLogic extends EventEmitter {
     private basePort: number;
     private stationConfig: StationConfig;
 
+    // State management (optional - injected from WsjtxManager)
+    private stateManager: StateManager | null = null;
+    private channelUdpManager: ChannelUdpManager | null = null;
+
     constructor(processManager: ProcessManager, basePort: number = HRD_CAT_BASE_PORT, stationConfig: StationConfig = {}) {
         super();
         this.processManager = processManager;
         this.basePort = basePort;
         this.stationConfig = stationConfig;
+    }
+
+    /**
+     * Set the StateManager for unified state tracking
+     */
+    public setStateManager(stateManager: StateManager): void {
+        this.stateManager = stateManager;
+    }
+
+    /**
+     * Set the ChannelUdpManager for dynamic UDP listeners
+     */
+    public setChannelUdpManager(channelUdpManager: ChannelUdpManager): void {
+        this.channelUdpManager = channelUdpManager;
     }
 
     /**
@@ -161,6 +185,16 @@ export class SliceMasterLogic extends EventEmitter {
         // Store slice index mapping
         this.sliceIndexMap.set(slice.id, sliceIndex);
 
+        // Update StateManager with Flex slice data
+        if (this.stateManager) {
+            this.stateManager.updateFromFlex(sliceIndex, {
+                freq_hz: slice.frequency,
+                mode: slice.mode,
+                is_tx: slice.active,  // First slice or active slice is TX
+                dax_rx: daxChannel,
+            });
+        }
+
         // Start HRD CAT server FIRST (before WSJT-X tries to connect)
         try {
             await this.startCatServer(sliceIndex, slice.frequency);
@@ -168,6 +202,17 @@ export class SliceMasterLogic extends EventEmitter {
         } catch (error) {
             console.error(`  Failed to start HRD CAT server:`, error);
             return;
+        }
+
+        // Start UDP listener for this channel
+        if (this.channelUdpManager) {
+            try {
+                this.channelUdpManager.startChannel(sliceIndex, instanceName);
+                console.log(`  UDP listener started on port ${udpPort}`);
+            } catch (error) {
+                console.error(`  Failed to start UDP listener:`, error);
+                // Continue anyway - CAT still works
+            }
         }
 
         // Configure Wide Graph
@@ -202,6 +247,12 @@ export class SliceMasterLogic extends EventEmitter {
             });
 
             this.sliceToInstance.set(slice.id, instanceName);
+
+            // Register instance with StateManager
+            if (this.stateManager) {
+                this.stateManager.registerInstance(instanceName, sliceIndex);
+            }
+
             this.emit('instance-launched', {
                 sliceId: slice.id,
                 instanceName,
@@ -217,8 +268,14 @@ export class SliceMasterLogic extends EventEmitter {
             });
         } catch (error) {
             console.error(`Failed to launch instance for slice ${slice.id}:`, error);
-            // Stop CAT server if WSJT-X failed to start
+            // Stop CAT server and UDP listener if WSJT-X failed to start
             this.stopCatServer(sliceIndex);
+            if (this.channelUdpManager) {
+                this.channelUdpManager.stopChannel(sliceIndex);
+            }
+            if (this.stateManager) {
+                this.stateManager.setChannelStatus(sliceIndex, 'error');
+            }
         }
     }
 
@@ -233,6 +290,16 @@ export class SliceMasterLogic extends EventEmitter {
         // Stop HRD CAT server
         if (sliceIndex !== undefined) {
             this.stopCatServer(sliceIndex);
+
+            // Stop UDP listener for this channel
+            if (this.channelUdpManager) {
+                this.channelUdpManager.stopChannel(sliceIndex);
+            }
+
+            // Unregister instance from StateManager
+            if (this.stateManager) {
+                this.stateManager.unregisterInstance(instanceName);
+            }
         }
 
         this.sliceIndexMap.delete(slice.id);
@@ -252,6 +319,15 @@ export class SliceMasterLogic extends EventEmitter {
                     this.updateSliceMode(sliceIndex, slice.mode);
                 }
 
+                // Update StateManager with new Flex slice data
+                if (this.stateManager) {
+                    this.stateManager.updateFromFlex(sliceIndex, {
+                        freq_hz: slice.frequency,
+                        mode: slice.mode,
+                        is_tx: slice.active,
+                    });
+                }
+
                 this.emit('slice-updated', {
                     sliceId: slice.id,
                     sliceIndex,
@@ -267,11 +343,16 @@ export class SliceMasterLogic extends EventEmitter {
     }
 
     /**
-     * Stop all CAT servers and instances
+     * Stop all CAT servers, UDP listeners, and instances
      */
     public stopAll(): void {
         for (const sliceIndex of this.catServers.keys()) {
             this.stopCatServer(sliceIndex);
+        }
+
+        // Stop all UDP listeners
+        if (this.channelUdpManager) {
+            this.channelUdpManager.stopAll();
         }
     }
 }

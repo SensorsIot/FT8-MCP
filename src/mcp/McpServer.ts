@@ -582,6 +582,224 @@ export class WsjtxMcpServer {
                 }
             }
         );
+
+        // === New FSD v3 Tools ===
+
+        // Tool: rig_get_state (FSD §11.1) - Get full MCP state
+        this.server.tool(
+            "rig_get_state",
+            "Get full MCP state including all channels, TX designation, and connection status",
+            {},
+            async () => {
+                const state = this.wsjtxManager.getMcpState();
+                const summary = {
+                    channels: state.channels.map(ch => ({
+                        id: ch.id,
+                        index: ch.index,
+                        freq_hz: ch.freq_hz,
+                        band: ch.band,
+                        mode: ch.wsjtx_mode || ch.mode,
+                        is_tx: ch.is_tx,
+                        status: ch.status,
+                        connected: ch.connected,
+                        last_decode_time: ch.last_decode_time,
+                    })),
+                    tx_channel: state.tx_channel_index !== null
+                        ? String.fromCharCode(65 + state.tx_channel_index)
+                        : null,
+                    flex_connected: state.flex_connected,
+                };
+                return {
+                    content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }],
+                };
+            }
+        );
+
+        // Tool: wsjtx_get_decodes (FSD §11.5) - Get recent decodes for a channel
+        this.server.tool(
+            "wsjtx_get_decodes",
+            "Get recent decodes for a specific channel or all channels",
+            {
+                channel_index: z.number().min(0).max(3).optional().describe("Channel index (0-3). Omit for all channels."),
+                since_ms: z.number().optional().describe("Time window in milliseconds (default: 30000 = 30 seconds)"),
+            },
+            async ({ channel_index, since_ms }) => {
+                const timeWindow = since_ms ?? 30000;
+                let decodes;
+
+                if (channel_index !== undefined) {
+                    decodes = this.wsjtxManager.getDecodes(channel_index, timeWindow);
+                } else {
+                    decodes = this.wsjtxManager.getAllDecodes(timeWindow);
+                }
+
+                // Format decodes for AI consumption
+                const formatted = decodes.map(d => ({
+                    timestamp: d.timestamp,
+                    channel: d.slice_id,
+                    rf_hz: d.rf_hz,
+                    dial_hz: d.dial_hz,
+                    snr_db: d.snr_db,
+                    dt_sec: d.dt_sec,
+                    call: d.call,
+                    grid: d.grid,
+                    is_cq: d.is_cq,
+                    is_my_call: d.is_my_call,
+                    message: d.raw_text,
+                }));
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: JSON.stringify({ decodes: formatted, count: formatted.length }, null, 2)
+                    }],
+                };
+            }
+        );
+
+        // Tool: log_get_worked (FSD §11.6) - Check if station is worked
+        this.server.tool(
+            "log_get_worked",
+            "Check if a station has been worked on a specific band and mode",
+            {
+                call: z.string().describe("Callsign to check"),
+                band: z.string().describe("Band (e.g., '20m', '40m')"),
+                mode: z.string().describe("Mode (e.g., 'FT8', 'FT4')"),
+            },
+            async ({ call, band, mode }) => {
+                const worked = this.wsjtxManager.isWorked(call, band, mode);
+                const entry = this.wsjtxManager.getStateManager().getWorkedEntry(call, band, mode);
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: JSON.stringify({
+                            worked,
+                            call,
+                            band,
+                            mode,
+                            last_qso_time: entry?.last_qso_time || null,
+                        }, null, 2)
+                    }],
+                };
+            }
+        );
+
+        // Tool: rig_set_tx_channel (FSD §11.3) - Set TX channel
+        this.server.tool(
+            "rig_set_tx_channel",
+            "Set which channel is designated for transmitting",
+            {
+                channel_index: z.number().min(0).max(3).describe("Channel index (0=A, 1=B, 2=C, 3=D)"),
+            },
+            async ({ channel_index }) => {
+                try {
+                    this.wsjtxManager.setTxChannel(channel_index);
+
+                    // Also update FlexRadio if connected
+                    if (this.flexClient) {
+                        this.flexClient.setSliceTx(channel_index, true);
+                    }
+
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: `TX channel set to ${String.fromCharCode(65 + channel_index)}`
+                        }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{ type: "text" as const, text: `Error: ${error}` }],
+                        isError: true,
+                    };
+                }
+            }
+        );
+
+        // === Logbook Tools (FSD §8) ===
+
+        // Tool: log_get_info - Get logbook information
+        this.server.tool(
+            "log_get_info",
+            "Get logbook information including path and QSO count",
+            {},
+            async () => {
+                const path = this.wsjtxManager.getLogbookPath();
+                const count = this.wsjtxManager.getQsoCount();
+                const state = this.wsjtxManager.getMcpState();
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: JSON.stringify({
+                            logbook_path: path,
+                            total_qsos: count,
+                            last_updated: state.logbook.last_updated,
+                        }, null, 2)
+                    }],
+                };
+            }
+        );
+
+        // Tool: log_export - Export logbook to a new file
+        this.server.tool(
+            "log_export",
+            "Export the logbook to a new ADIF file",
+            {
+                output_path: z.string().describe("Full path for the output ADIF file"),
+            },
+            async ({ output_path }) => {
+                try {
+                    this.wsjtxManager.exportLogbook(output_path);
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: `Logbook exported to ${output_path}`
+                        }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{ type: "text" as const, text: `Error: ${error}` }],
+                        isError: true,
+                    };
+                }
+            }
+        );
+
+        // Tool: log_clear - Clear logbook (with backup)
+        this.server.tool(
+            "log_clear",
+            "Clear the logbook (creates a timestamped backup first). Use with caution!",
+            {
+                confirm: z.boolean().describe("Must be true to confirm clearing the logbook"),
+            },
+            async ({ confirm }) => {
+                if (!confirm) {
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: "Error: You must set confirm=true to clear the logbook"
+                        }],
+                        isError: true,
+                    };
+                }
+
+                try {
+                    this.wsjtxManager.clearLogbook();
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: "Logbook cleared (backup created)"
+                        }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{ type: "text" as const, text: `Error: ${error}` }],
+                        isError: true,
+                    };
+                }
+            }
+        );
     }
 
     /**
@@ -645,7 +863,7 @@ export class WsjtxMcpServer {
     }
 
     private setupResources() {
-        // Resource: List instances
+        // Resource: List instances (legacy)
         this.server.resource(
             "instances",
             "wsjt-x://instances",
@@ -655,6 +873,100 @@ export class WsjtxMcpServer {
                     contents: [{
                         uri: uri.href,
                         text: JSON.stringify(instances, null, 2),
+                        mimeType: "application/json",
+                    }],
+                };
+            }
+        );
+
+        // Resource: Full MCP state (FSD §11.1)
+        this.server.resource(
+            "state",
+            "wsjt-x://state",
+            async (uri) => {
+                const state = this.wsjtxManager.getMcpState();
+                // Convert Map to object for JSON serialization
+                const serializedState = {
+                    ...state,
+                    logbook: {
+                        ...state.logbook,
+                        entries: Object.fromEntries(state.logbook.entries),
+                    },
+                };
+                return {
+                    contents: [{
+                        uri: uri.href,
+                        text: JSON.stringify(serializedState, null, 2),
+                        mimeType: "application/json",
+                    }],
+                };
+            }
+        );
+
+        // Resource: Channel list (FSD §3)
+        this.server.resource(
+            "channels",
+            "wsjt-x://channels",
+            async (uri) => {
+                const state = this.wsjtxManager.getMcpState();
+                const channels = state.channels.map(ch => ({
+                    id: ch.id,
+                    index: ch.index,
+                    freq_hz: ch.freq_hz,
+                    band: ch.band,
+                    mode: ch.wsjtx_mode || ch.mode,
+                    is_tx: ch.is_tx,
+                    status: ch.status,
+                    connected: ch.connected,
+                    last_decode_time: ch.last_decode_time,
+                    decode_count: ch.decode_count,
+                    qso_count: ch.qso_count,
+                }));
+                return {
+                    contents: [{
+                        uri: uri.href,
+                        text: JSON.stringify({ channels, tx_channel: state.tx_channel_index }, null, 2),
+                        mimeType: "application/json",
+                    }],
+                };
+            }
+        );
+
+        // Resource: Recent decodes (FSD §7)
+        this.server.resource(
+            "decodes",
+            "wsjt-x://decodes",
+            async (uri) => {
+                // Get decodes from last 60 seconds by default
+                const decodes = this.wsjtxManager.getAllDecodes(60000);
+                return {
+                    contents: [{
+                        uri: uri.href,
+                        text: JSON.stringify({ decodes, count: decodes.length }, null, 2),
+                        mimeType: "application/json",
+                    }],
+                };
+            }
+        );
+
+        // Resource: Logbook info (FSD §8)
+        this.server.resource(
+            "logbook",
+            "wsjt-x://logbook",
+            async (uri) => {
+                const path = this.wsjtxManager.getLogbookPath();
+                const count = this.wsjtxManager.getQsoCount();
+                const state = this.wsjtxManager.getMcpState();
+
+                return {
+                    contents: [{
+                        uri: uri.href,
+                        text: JSON.stringify({
+                            logbook_path: path,
+                            total_qsos: count,
+                            last_updated: state.logbook.last_updated,
+                            worked_entries_count: state.logbook.entries.size,
+                        }, null, 2),
                         mimeType: "application/json",
                     }],
                 };

@@ -4,6 +4,9 @@
   "description": "![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)\r ![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)",
   "main": "index.js",
   "scripts": {
+    "build": "node --max-old-space-size=8192 node_modules/typescript/bin/tsc",
+    "start": "node dist/index.js",
+    "dev": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -19,7 +22,7 @@
   },
   "homepage": "https://github.com/SensorsIot/wsjt-x-MCP#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.22.0",
+    "@modelcontextprotocol/sdk": "^1.0.4",
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
@@ -28,7 +31,7 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "ws": "^8.18.3",
-    "zod": "^3.25.76"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/serialport": "^8.0.5"
