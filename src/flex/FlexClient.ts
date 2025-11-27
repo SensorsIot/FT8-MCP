@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { Config } from '../config';
+import { Config } from '../SettingsManager';
 import { Vita49Client, FlexSlice } from './Vita49Client';
 
 export class FlexClient extends EventEmitter {

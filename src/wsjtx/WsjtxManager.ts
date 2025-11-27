@@ -1,20 +1,19 @@
 import { EventEmitter } from 'events';
-import { Config } from '../config';
+import { Config } from '../SettingsManager';
 import { WsjtxUdpListener } from './UdpListener';
 import { UdpSender } from './UdpSender';
 import { WsjtxDecode, WsjtxStatus, SliceState } from './types';
 import { ProcessManager, WsjtxInstanceConfig } from './ProcessManager';
 import { QsoStateMachine, QsoConfig } from './QsoStateMachine';
-import { SliceMasterLogic } from './SliceMasterLogic';
-import { StationTracker } from './StationTracker';
+import { FlexRadioManager } from './FlexRadioManager';
 import {
     StateManager,
     ChannelUdpManager,
-    QsoManager,
     McpState,
     DecodeRecord,
-    QsoRecord,
 } from '../state';
+import { LogbookManager, QsoRecord } from '../logbook';
+import { DashboardManager } from '../dashboard';
 
 export class WsjtxManager extends EventEmitter {
     private config: Config;
@@ -23,13 +22,13 @@ export class WsjtxManager extends EventEmitter {
     private udpSender: UdpSender;
     private processManager: ProcessManager;
     private activeQsos: Map<string, QsoStateMachine> = new Map();
-    private sliceMaster?: SliceMasterLogic;
-    private stationTracker: StationTracker;
+    private flexRadioManager?: FlexRadioManager;
+    private dashboardManager: DashboardManager;
 
     // New state management (Phase 1)
     private stateManager: StateManager;
     private channelUdpManager: ChannelUdpManager;
-    private qsoManager: QsoManager;
+    private logbookManager: LogbookManager;
 
     constructor(config: Config) {
         super();
@@ -48,18 +47,28 @@ export class WsjtxManager extends EventEmitter {
             config.station.callsign
         );
 
-        // Initialize QSO Manager for ADIF logging (Phase 1.5)
-        this.qsoManager = new QsoManager(this.stateManager, {
+        // Initialize LogbookManager for ADIF logging and duplicate detection
+        this.logbookManager = new LogbookManager({
             stationCallsign: config.station.callsign,
             stationGrid: config.station.grid,
-            // logbookPath: can be configured via config.logbook?.path in future
+            enableHrdServer: config.logbook?.enableHrdServer ?? false,
+            hrdPort: config.logbook?.hrdPort ?? 7800,
+            logbookPath: config.logbook?.path,
         });
 
         // Legacy components (still used in STANDARD mode and for backward compatibility)
         this.udpListener = new WsjtxUdpListener(2237);
         this.udpSender = new UdpSender(2237);
         this.processManager = new ProcessManager();
-        this.stationTracker = new StationTracker(config);
+
+        // Dashboard Manager for station tracking
+        this.dashboardManager = new DashboardManager({
+            stationLifetimeSeconds: config.dashboard?.stationLifetimeSeconds ?? 120,
+            snrWeakThreshold: config.dashboard?.snrWeakThreshold ?? -15,
+            snrStrongThreshold: config.dashboard?.snrStrongThreshold ?? 0,
+            colors: config.dashboard?.colors,
+        });
+        this.dashboardManager.setLogbookManager(this.logbookManager);
 
         this.setupListeners();
         this.setupStateListeners();
@@ -90,8 +99,8 @@ export class WsjtxManager extends EventEmitter {
                 offAir: decode.off_air,
             };
 
-            // Forward to station tracker for dashboard
-            this.stationTracker.handleDecode(wsjtxDecode);
+            // Forward to dashboard manager
+            this.dashboardManager.handleDecode(wsjtxDecode);
 
             // Forward to active QSO state machines
             const qso = this.activeQsos.get(decode.slice_id);
@@ -129,14 +138,14 @@ export class WsjtxManager extends EventEmitter {
                 configurationName: '',
             };
 
-            this.stationTracker.handleStatus(wsjtxStatus);
+            this.dashboardManager.handleStatus(wsjtxStatus);
             this.emit('status', status);
         });
 
-        // Forward QSO logged events to QsoManager for ADIF writing
+        // Forward QSO logged events to LogbookManager for ADIF writing
         this.channelUdpManager.on('qso-logged', (qso: QsoRecord) => {
-            // Write to ADIF logbook (this also updates WorkedIndex in StateManager)
-            this.qsoManager.logQso(qso);
+            // Write to ADIF logbook and update WorkedIndex
+            this.logbookManager.logQso(qso);
             this.emit('qso-logged', qso);
         });
 
@@ -153,8 +162,8 @@ export class WsjtxManager extends EventEmitter {
         this.udpListener.on('decode', (decode: WsjtxDecode) => {
             console.log(`[${decode.id}] Decode: ${decode.message} (SNR: ${decode.snr})`);
 
-            // Forward to station tracker for dashboard
-            this.stationTracker.handleDecode(decode);
+            // Forward to dashboard manager
+            this.dashboardManager.handleDecode(decode);
 
             // Forward to active QSO state machines
             const qso = this.activeQsos.get(decode.id);
@@ -168,8 +177,8 @@ export class WsjtxManager extends EventEmitter {
         this.udpListener.on('status', (status: WsjtxStatus) => {
             console.log(`[${status.id}] Status: ${status.mode} @ ${status.dialFrequency} Hz`);
 
-            // Forward to station tracker for dashboard
-            this.stationTracker.handleStatus(status);
+            // Forward to dashboard manager
+            this.dashboardManager.handleStatus(status);
 
             this.emit('status', status);
         });
@@ -186,20 +195,20 @@ export class WsjtxManager extends EventEmitter {
             console.log(`Process manager: Instance ${instance.name} stopped`);
         });
 
-        // Forward station tracker updates
-        this.stationTracker.on('update', (slices: SliceState[]) => {
+        // Forward dashboard updates
+        this.dashboardManager.on('update', (slices: SliceState[]) => {
             this.emit('stations-update', slices);
         });
     }
 
     public async start(): Promise<void> {
-        // Initialize QSO Manager (loads existing ADIF logbook -> populates WorkedIndex)
+        // Initialize LogbookManager (loads existing ADIF logbook -> populates WorkedIndex)
         try {
-            await this.qsoManager.initialize();
-            console.log(`QSO Manager initialized with ${this.qsoManager.getQsoCount()} existing QSOs`);
-            console.log(`Logbook path: ${this.qsoManager.getLogbookPath()}`);
+            await this.logbookManager.initialize();
+            console.log(`[Logbook] Initialized with ${this.logbookManager.getQsoCount()} existing QSOs`);
+            console.log(`[Logbook] Path: ${this.logbookManager.getLogbookPath()}`);
         } catch (error) {
-            console.error('Failed to initialize QSO Manager:', error);
+            console.error('[Logbook] Failed to initialize:', error);
             // Continue anyway - QSOs won't be logged to file but everything else works
         }
 
@@ -227,9 +236,9 @@ export class WsjtxManager extends EventEmitter {
         // Update StateManager with Flex connection status
         this.stateManager.setFlexConnected(true);
 
-        // Initialize Slice Master logic for FlexRadio mode
+        // Initialize FlexRadio manager for multi-slice operation
         // Pass station config (callsign, grid) for WSJT-X INI configuration
-        this.sliceMaster = new SliceMasterLogic(
+        this.flexRadioManager = new FlexRadioManager(
             this.processManager,
             undefined, // use default HRD CAT base port
             {
@@ -238,9 +247,9 @@ export class WsjtxManager extends EventEmitter {
             }
         );
 
-        // Wire up StateManager and ChannelUdpManager to SliceMasterLogic
-        this.sliceMaster.setStateManager(this.stateManager);
-        this.sliceMaster.setChannelUdpManager(this.channelUdpManager);
+        // Wire up StateManager and ChannelUdpManager to FlexRadioManager
+        this.flexRadioManager.setStateManager(this.stateManager);
+        this.flexRadioManager.setChannelUdpManager(this.channelUdpManager);
 
         // Handle slice events from FlexRadio
         flexClient.on('slice-added', (slice: any) => {
@@ -263,42 +272,42 @@ export class WsjtxManager extends EventEmitter {
                 }
             }
 
-            if (this.sliceMaster) {
-                this.sliceMaster.handleSliceAdded(slice);
+            if (this.flexRadioManager) {
+                this.flexRadioManager.handleSliceAdded(slice);
             }
         });
 
         flexClient.on('slice-removed', (slice: any) => {
-            if (this.sliceMaster) {
-                this.sliceMaster.handleSliceRemoved(slice);
+            if (this.flexRadioManager) {
+                this.flexRadioManager.handleSliceRemoved(slice);
             }
         });
 
         flexClient.on('slice-updated', (slice: any) => {
-            if (this.sliceMaster) {
-                this.sliceMaster.handleSliceUpdated(slice);
+            if (this.flexRadioManager) {
+                this.flexRadioManager.handleSliceUpdated(slice);
             }
         });
 
         // Handle CAT events from WSJT-X (via CatServer) -> send to FlexRadio
-        this.sliceMaster.on('cat-frequency-change', (sliceIndex: number, freq: number) => {
+        this.flexRadioManager.on('cat-frequency-change', (sliceIndex: number, freq: number) => {
             console.log(`Forwarding frequency change to FlexRadio: slice ${sliceIndex} -> ${freq} Hz`);
             flexClient.tuneSlice(sliceIndex, freq);
         });
 
-        this.sliceMaster.on('cat-mode-change', (sliceIndex: number, mode: string) => {
+        this.flexRadioManager.on('cat-mode-change', (sliceIndex: number, mode: string) => {
             console.log(`Forwarding mode change to FlexRadio: slice ${sliceIndex} -> ${mode}`);
             flexClient.setSliceMode(sliceIndex, mode);
         });
 
-        this.sliceMaster.on('cat-ptt-change', (sliceIndex: number, tx: boolean) => {
+        this.flexRadioManager.on('cat-ptt-change', (sliceIndex: number, tx: boolean) => {
             console.log(`Forwarding PTT to FlexRadio: slice ${sliceIndex} -> ${tx ? 'TX' : 'RX'}`);
             flexClient.setSliceTx(sliceIndex, tx);
         });
 
         // Handle instance launch - HRD CAT server provides initial frequency
         // No need to send UDP frequency command since WSJT-X gets it from HRD CAT
-        this.sliceMaster.on('instance-launched', (data: {
+        this.flexRadioManager.on('instance-launched', (data: {
             sliceId: string;
             instanceName: string;
             sliceLetter: string;
@@ -364,15 +373,11 @@ export class WsjtxManager extends EventEmitter {
     }
 
     public getSliceStates(): SliceState[] {
-        return this.stationTracker.getSliceStates();
+        return this.dashboardManager.getSliceStates();
     }
 
-    public getStationTracker(): StationTracker {
-        return this.stationTracker;
-    }
-
-    public reloadAdifLog(): void {
-        this.stationTracker.reloadAdifLog();
+    public getDashboardManager(): DashboardManager {
+        return this.dashboardManager;
     }
 
     // === New State Management API (Phase 1) ===
@@ -409,7 +414,7 @@ export class WsjtxManager extends EventEmitter {
      * Check if a station is worked on band/mode (FSD §11.6)
      */
     public isWorked(call: string, band: string, mode: string): boolean {
-        return this.stateManager.isWorked(call, band, mode);
+        return this.logbookManager.isWorked(call, band, mode);
     }
 
     /**
@@ -420,38 +425,38 @@ export class WsjtxManager extends EventEmitter {
     }
 
     /**
-     * Get QsoManager for logbook access
+     * Get LogbookManager for logbook access
      */
-    public getQsoManager(): QsoManager {
-        return this.qsoManager;
+    public getLogbookManager(): LogbookManager {
+        return this.logbookManager;
     }
 
     /**
      * Get logbook path
      */
     public getLogbookPath(): string {
-        return this.qsoManager.getLogbookPath();
+        return this.logbookManager.getLogbookPath();
     }
 
     /**
      * Get total QSO count from logbook
      */
     public getQsoCount(): number {
-        return this.qsoManager.getQsoCount();
+        return this.logbookManager.getQsoCount();
     }
 
     /**
      * Export logbook to a new ADIF file
      */
     public exportLogbook(outputPath: string): void {
-        this.qsoManager.exportToFile(outputPath);
+        this.logbookManager.exportToFile(outputPath);
     }
 
     /**
      * Clear logbook (creates backup first)
      */
     public clearLogbook(): void {
-        this.qsoManager.clearLogbook();
+        this.logbookManager.clearLogbook();
     }
 
     // === WSJT-X UDP Control Methods ===
@@ -556,6 +561,40 @@ export class WsjtxManager extends EventEmitter {
         this.udpSender.sendSetFrequency(instanceId, frequencyHz, mode);
     }
 
+    /**
+     * Restart all WSJT-X instances (for config changes that require INI reload)
+     * Waits for graceful shutdown before restarting
+     */
+    public async restartAllInstances(): Promise<void> {
+        console.log('Restarting all WSJT-X instances for config change...');
+
+        if (this.flexRadioManager) {
+            // In FLEX mode, use FlexRadioManager to restart instances
+            await this.flexRadioManager.restartAllInstances();
+        } else {
+            // In STANDARD mode, restart via ProcessManager
+            const instances = this.processManager.getAllInstances();
+            const configs: WsjtxInstanceConfig[] = instances.map(inst => ({
+                name: inst.name,
+                udpPort: inst.udpPort,
+                rigName: inst.name,
+            }));
+
+            // Stop all instances
+            this.processManager.stopAll();
+
+            // Wait for processes to exit
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            // Restart all instances
+            for (const config of configs) {
+                this.processManager.startInstance(config);
+            }
+        }
+
+        console.log('WSJT-X instances restarted');
+    }
+
     public async stop(): Promise<void> {
         console.log('Stopping WSJT-X Manager...');
 
@@ -565,17 +604,18 @@ export class WsjtxManager extends EventEmitter {
         }
         this.activeQsos.clear();
 
-        // Stop HRD CAT servers and UDP listeners (via SliceMasterLogic)
-        if (this.sliceMaster) {
-            this.sliceMaster.stopAll();
+        // Stop HRD CAT servers and UDP listeners (via FlexRadioManager)
+        if (this.flexRadioManager) {
+            this.flexRadioManager.stopAll();
         }
 
         // Stop new state management components
         this.channelUdpManager.stopAll();
         this.stateManager.stop();
+        this.logbookManager.stop();
 
         // Stop legacy components
-        this.stationTracker.stop();
+        this.dashboardManager.stop();
         this.processManager.stopAll();
         this.udpListener.stop();
 

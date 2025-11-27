@@ -40,8 +40,8 @@ AI Agent <--MCP/stdio--> MCP Server
                               |
               +---------------+---------------+
               |               |               |
-         FlexClient     SliceMaster      CatServer
-         (VITA 49)       Logic          (TS-2000)
+         FlexClient    FlexRadio       HrdCatServer
+         (VITA 49)      Manager        (HRD Protocol)
               |               |               |
               +-------+-------+-------+-------+
                       |               |
@@ -53,7 +53,7 @@ AI Agent <--MCP/stdio--> MCP Server
 **FlexRadio Features:**
 - Auto-discovery of FlexRadio on the network
 - Auto-launch WSJT-X instance for each slice
-- Built-in Kenwood TS-2000 CAT server (ports 7831-7834)
+- Built-in HRD CAT server (ports 7809-7812)
 - Bidirectional control: WSJT-X frequency/mode/PTT changes sync to FlexRadio
 - Auto-configuration of WSJT-X INI files (audio, rig, wide graph)
 
@@ -160,28 +160,47 @@ The server exposes these tools to AI agents:
 ```
 wsjt-x-MCP/
 ├── src/
-│   ├── index.ts           # Entry point
-│   ├── config.ts          # Configuration management
-│   ├── mcp/
-│   │   └── McpServer.ts   # MCP protocol handler
-│   ├── wsjtx/
-│   │   ├── WsjtxManager.ts    # Main orchestrator
-│   │   ├── ProcessManager.ts   # WSJT-X process lifecycle
-│   │   ├── UdpListener.ts      # UDP message receiver
-│   │   ├── UdpSender.ts        # UDP message sender
-│   │   ├── QsoStateMachine.ts  # Autonomous QSO handler
-│   │   ├── SliceMasterLogic.ts # FlexRadio slice management
-│   │   └── WsjtxConfig.ts      # INI file auto-configuration
-│   ├── flex/
-│   │   ├── FlexClient.ts       # FlexRadio connection manager
-│   │   ├── Vita49Client.ts     # VITA 49 protocol
-│   │   ├── CatServer.ts        # Built-in CAT server
-│   │   └── FlexDiscovery.ts    # Auto-discovery
-│   └── web/
-│       └── server.ts      # Web dashboard server
-├── frontend/              # React web dashboard
-├── dist/                  # Compiled JavaScript
-└── config.json            # Runtime configuration
+│   ├── index.ts               # Entry point
+│   ├── SettingsManager.ts     # Configuration management
+│   │
+│   ├── wsjtx/                 # WSJT-X management
+│   │   ├── WsjtxManager.ts        # Main orchestrator
+│   │   ├── ProcessManager.ts      # WSJT-X process lifecycle
+│   │   ├── FlexRadioManager.ts    # FlexRadio slice management
+│   │   ├── UdpListener.ts         # UDP message receiver
+│   │   ├── UdpSender.ts           # UDP message sender
+│   │   ├── QsoStateMachine.ts     # Autonomous QSO handler
+│   │   ├── WindowManager.ts       # WSJT-X window positioning
+│   │   └── WsjtxConfig.ts         # INI file auto-configuration
+│   │
+│   ├── state/                 # MCP state management
+│   │   ├── StateManager.ts        # Aggregate MCP state
+│   │   ├── ChannelUdpManager.ts   # Per-channel UDP
+│   │   └── types.ts
+│   │
+│   ├── logbook/               # Logbook operations
+│   │   └── LogbookManager.ts      # ADIF, WorkedIndex, HRD server
+│   │
+│   ├── dashboard/             # Web dashboard state
+│   │   └── DashboardManager.ts    # Station tracking
+│   │
+│   ├── cat/                   # CAT control
+│   │   └── HrdCatServer.ts        # HRD protocol server
+│   │
+│   ├── flex/                  # FlexRadio backend
+│   │   ├── FlexClient.ts          # FlexRadio connection
+│   │   ├── Vita49Client.ts        # VITA 49 protocol
+│   │   └── FlexDiscovery.ts       # Auto-discovery
+│   │
+│   ├── mcp/                   # MCP protocol
+│   │   └── McpServer.ts           # MCP stdio transport
+│   │
+│   └── web/                   # Web interface
+│       └── server.ts              # Express + WebSocket
+│
+├── frontend/                  # React web dashboard
+├── dist/                      # Compiled JavaScript
+└── config.json                # Runtime configuration
 ```
 
 ## Documentation

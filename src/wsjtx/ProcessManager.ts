@@ -57,7 +57,7 @@ export class WsjtxProcess extends EventEmitter {
 
         // Log FlexRadio-specific configuration (auto-configured via INI)
         if (this.config.smartCatPort !== undefined) {
-            console.log(`  === FlexRadio Configuration (SliceMaster format) ===`);
+            console.log(`  === FlexRadio Configuration ===`);
             console.log(`  DAX Channel: ${this.config.daxChannel || 'Not specified'}`);
             console.log(`  SmartCAT: ${this.config.smartCatHost || '127.0.0.1'}:${this.config.smartCatPort}`);
             console.log(`  Rig Type: Ham Radio Deluxe`);

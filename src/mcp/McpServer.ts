@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { WsjtxManager } from "../wsjtx/WsjtxManager";
 import { FlexClient } from "../flex/FlexClient";
-import { Config } from "../config";
+import { Config } from "../SettingsManager";
 
 export class WsjtxMcpServer {
     private server: McpServer;

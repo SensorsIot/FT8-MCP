@@ -53,6 +53,12 @@ export const ConfigSchema = z.object({
             new_dxcc: z.string().default('#ec4899'),     // pink-500
         }).optional(),
     }).optional(),
+    // Logbook settings
+    logbook: z.object({
+        path: z.string().optional(),                     // Path to ADIF logbook (default: %APPDATA%/wsjt-x-mcp/mcp_logbook.adi)
+        enableHrdServer: z.boolean().default(false),     // Enable HRD server for external loggers (Log4OM, N1MM)
+        hrdPort: z.number().default(7800),               // HRD server port for external loggers
+    }).optional(),
     // Internal parameters (not user-configurable)
     mcp: z.object({
         name: z.string().default('wsjt-x-mcp'),
@@ -100,12 +106,60 @@ export function loadConfig(): Config {
         wsjtx: (fileConfig as any)?.wsjtx || {},
         station: (fileConfig as any)?.station || {},
         dashboard: (fileConfig as any)?.dashboard || {},
+        logbook: (fileConfig as any)?.logbook || {},
         mcp: (fileConfig as any)?.mcp || {},
         web: (fileConfig as any)?.web || {}
     });
 }
 
-export function saveConfig(config: Partial<Config>): Config {
+// Config change categories
+export type ConfigChangeLevel = 'live' | 'wsjtx_restart' | 'app_restart';
+
+export interface ConfigChangeResult {
+    config: Config;
+    changeLevel: ConfigChangeLevel;
+    changedFields: string[];
+}
+
+// Determine what level of restart is needed for a config change
+function getChangeLevel(oldConfig: any, newConfig: any, path: string = ''): { level: ConfigChangeLevel; fields: string[] } {
+    // Fields that require full app restart
+    const appRestartFields = ['mode', 'web.port', 'flex.host'];
+
+    // Fields that require WSJT-X instance restart (INI file changes)
+    const wsjtxRestartFields = ['wsjtx.path', 'flex.catBasePort', 'flex.defaultBands', 'standard.rigName'];
+
+    // All other fields can be applied live
+
+    let maxLevel: ConfigChangeLevel = 'live';
+    const changedFields: string[] = [];
+
+    function compare(oldVal: any, newVal: any, currentPath: string) {
+        if (typeof newVal === 'object' && newVal !== null && !Array.isArray(newVal)) {
+            for (const key of Object.keys(newVal)) {
+                compare(oldVal?.[key], newVal[key], currentPath ? `${currentPath}.${key}` : key);
+            }
+        } else {
+            // Check if value actually changed
+            const oldStr = JSON.stringify(oldVal);
+            const newStr = JSON.stringify(newVal);
+            if (oldStr !== newStr) {
+                changedFields.push(currentPath);
+
+                if (appRestartFields.includes(currentPath)) {
+                    maxLevel = 'app_restart';
+                } else if (wsjtxRestartFields.includes(currentPath) && maxLevel !== 'app_restart') {
+                    maxLevel = 'wsjtx_restart';
+                }
+            }
+        }
+    }
+
+    compare(oldConfig, newConfig, '');
+    return { level: maxLevel, fields: changedFields };
+}
+
+export function saveConfig(config: Partial<Config>): ConfigChangeResult {
     let existingConfig = {};
 
     if (fs.existsSync(CONFIG_FILE)) {
@@ -117,10 +171,22 @@ export function saveConfig(config: Partial<Config>): Config {
     }
 
     const mergedConfig = { ...existingConfig, ...config };
+
+    // Determine what changed
+    const { level, fields } = getChangeLevel(existingConfig, mergedConfig, '');
+
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(mergedConfig, null, 2));
     console.log('Config saved to config.json');
+    if (fields.length > 0) {
+        console.log(`  Changed fields: ${fields.join(', ')}`);
+        console.log(`  Change level: ${level}`);
+    }
 
-    return ConfigSchema.parse(mergedConfig);
+    return {
+        config: ConfigSchema.parse(mergedConfig),
+        changeLevel: level,
+        changedFields: fields
+    };
 }
 
 export function getConfigFilePath(): string {

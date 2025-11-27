@@ -1,25 +1,96 @@
+/**
+ * DashboardManager - Station tracking and dashboard state for web UI
+ *
+ * Per FSD v3:
+ * - Tracks decoded stations per slice/channel
+ * - Computes station status (worked, strong, weak, etc.)
+ * - Provides real-time updates to web dashboard
+ * - Handles station lifetime and cleanup
+ *
+ * This replaces the StationTracker from src/wsjtx/ for cleaner separation.
+ */
+
 import { EventEmitter } from 'events';
-import { Config } from '../config';
-import { WsjtxDecode, WsjtxStatus, TrackedStation, SliceState, StationStatus } from './types';
-import { AdifLogReader } from './AdifLogReader';
+import { Config } from '../SettingsManager';
+import { LogbookManager } from '../logbook';
 
-// Helper to extract callsign from WSJT-X message
+// === Types ===
+
+export type StationStatus = 'worked' | 'normal' | 'weak' | 'strong' | 'priority' | 'new_dxcc';
+
+export interface TrackedStation {
+    callsign: string;
+    grid: string;
+    snr: number;
+    frequency: number;  // Audio offset
+    mode: string;
+    lastSeen: number;   // Timestamp
+    firstSeen: number;  // Timestamp
+    decodeCount: number;
+    status: StationStatus;
+    message: string;    // Last decoded message
+}
+
+export interface SliceState {
+    id: string;
+    name: string;
+    band: string;
+    mode: string;
+    dialFrequency: number;
+    stations: TrackedStation[];
+    isTransmitting: boolean;
+    txEnabled: boolean;
+}
+
+export interface WsjtxDecode {
+    id: string;
+    newDecode: boolean;
+    time: number;
+    snr: number;
+    deltaTime: number;
+    deltaFrequency: number;
+    mode: string;
+    message: string;
+    lowConfidence: boolean;
+    offAir: boolean;
+}
+
+export interface WsjtxStatus {
+    id: string;
+    dialFrequency: number;
+    mode: string;
+    dxCall: string;
+    report: string;
+    txMode: string;
+    txEnabled: boolean;
+    transmitting: boolean;
+    decoding: boolean;
+    rxDF: number;
+    txDF: number;
+}
+
+export interface DashboardManagerConfig {
+    stationLifetimeSeconds?: number;  // How long to show stations after last decode
+    snrWeakThreshold?: number;        // SNR below this = weak
+    snrStrongThreshold?: number;      // SNR above this = strong
+    colors?: {
+        worked?: string;
+        normal?: string;
+        weak?: string;
+        strong?: string;
+        priority?: string;
+        new_dxcc?: string;
+    };
+}
+
+// === Helpers ===
+
 function extractCallsign(message: string): string | null {
-    // Common FT8/FT4 message patterns:
-    // CQ DX W1ABC FN42
-    // CQ W1ABC FN42
-    // W1ABC DL2XYZ +05
-    // DL2XYZ W1ABC R-12
-    // W1ABC DL2XYZ RR73
-    // 73 W1ABC DL2XYZ
-
     const parts = message.trim().split(/\s+/);
 
     // Skip CQ messages - extract the calling station
     if (parts[0] === 'CQ') {
-        // CQ [DX/NA/EU/etc] CALLSIGN GRID
         if (parts.length >= 3) {
-            // Check if second part is a CQ modifier (DX, NA, EU, etc.) or callsign
             const potentialCall = parts[1].length <= 3 ? parts[2] : parts[1];
             if (isValidCallsign(potentialCall)) {
                 return potentialCall;
@@ -41,11 +112,8 @@ function extractCallsign(message: string): string | null {
     return null;
 }
 
-// Helper to extract grid square from message
 function extractGrid(message: string): string {
     const parts = message.trim().split(/\s+/);
-
-    // Grid squares are 4-6 characters: AA00 to RR99 followed by optional aa-xx
     const gridPattern = /^[A-R]{2}[0-9]{2}([a-x]{2})?$/i;
 
     for (const part of parts) {
@@ -57,17 +125,12 @@ function extractGrid(message: string): string {
     return '';
 }
 
-// Simple callsign validation
 function isValidCallsign(str: string): boolean {
     if (!str || str.length < 3 || str.length > 10) return false;
-
-    // Basic callsign pattern: prefix (1-3 chars) + number + suffix (1-4 chars)
-    // Also handles special prefixes like VK, ZL, etc.
     const callPattern = /^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(\/[A-Z0-9]+)?$/i;
     return callPattern.test(str);
 }
 
-// Helper to convert frequency to band
 function frequencyToBand(freqHz: number): string {
     const freqMhz = freqHz / 1_000_000;
 
@@ -88,6 +151,8 @@ function frequencyToBand(freqHz: number): string {
     return `${freqMhz.toFixed(3)} MHz`;
 }
 
+// === Internal Types ===
+
 interface SliceData {
     id: string;
     name: string;
@@ -98,46 +163,42 @@ interface SliceData {
     stations: Map<string, TrackedStation>;
 }
 
-export class StationTracker extends EventEmitter {
-    private config: Config;
+// === DashboardManager Class ===
+
+export class DashboardManager extends EventEmitter {
+    private config: DashboardManagerConfig;
     private slices: Map<string, SliceData> = new Map();
-    private adifReader: AdifLogReader;
+    private logbookManager: LogbookManager | null = null;
     private cleanupInterval: NodeJS.Timeout | null = null;
 
-    constructor(config: Config) {
+    constructor(config?: DashboardManagerConfig) {
         super();
-        this.config = config;
-        this.adifReader = new AdifLogReader(config.dashboard?.adifLogPath ?? '');
+        this.config = {
+            stationLifetimeSeconds: 120,
+            snrWeakThreshold: -15,
+            snrStrongThreshold: 0,
+            ...config,
+        };
 
         // Start periodic cleanup of expired stations
         this.startCleanup();
     }
 
-    private startCleanup(): void {
-        // Run cleanup every 10 seconds
-        this.cleanupInterval = setInterval(() => {
-            this.cleanupExpiredStations();
-        }, 10000);
+    /**
+     * Set logbook manager for duplicate checking
+     */
+    public setLogbookManager(logbookManager: LogbookManager): void {
+        this.logbookManager = logbookManager;
     }
 
-    private cleanupExpiredStations(): void {
-        const now = Date.now();
-        const lifetimeMs = (this.config.dashboard?.stationLifetimeSeconds ?? 120) * 1000;
-        let changed = false;
-
-        for (const slice of this.slices.values()) {
-            for (const [callsign, station] of slice.stations) {
-                if (now - station.lastSeen > lifetimeMs) {
-                    slice.stations.delete(callsign);
-                    changed = true;
-                }
-            }
-        }
-
-        if (changed) {
-            this.emitUpdate();
-        }
+    /**
+     * Update configuration
+     */
+    public updateConfig(config: DashboardManagerConfig): void {
+        this.config = { ...this.config, ...config };
     }
+
+    // === Decode/Status Handling ===
 
     public handleDecode(decode: WsjtxDecode): void {
         const callsign = extractCallsign(decode.message);
@@ -220,7 +281,7 @@ export class StationTracker extends EventEmitter {
             slice.txEnabled = status.txEnabled;
         }
 
-        // Re-compute status for all stations when frequency changes (band might change)
+        // Re-compute status for all stations when frequency changes
         for (const station of slice.stations.values()) {
             station.status = this.computeStatus(
                 station.callsign,
@@ -233,32 +294,26 @@ export class StationTracker extends EventEmitter {
         this.emitUpdate();
     }
 
-    private computeStatus(callsign: string, snr: number, dialFrequency: number, mode: string): StationStatus {
-        // Hierarchical status computation (highest priority first)
+    // === Status Computation ===
 
-        // 1. Check if already worked (lowest display priority but checked first for "worked" status)
+    private computeStatus(callsign: string, snr: number, dialFrequency: number, mode: string): StationStatus {
+        // 1. Check if already worked
         const band = frequencyToBand(dialFrequency);
-        if (this.adifReader.isWorked(callsign, band, mode)) {
+        if (this.logbookManager?.isWorked(callsign, band, mode)) {
             return 'worked';
         }
 
-        // 2. Contest priority (placeholder - always false for now)
+        // 2. Contest priority (placeholder)
         // TODO: Implement contest rules engine
-        // if (this.isContestPriority(callsign)) {
-        //     return 'priority';
-        // }
 
-        // 3. New DXCC (placeholder - always false for now)
+        // 3. New DXCC (placeholder)
         // TODO: Implement DXCC lookup
-        // if (this.isNewDxcc(callsign)) {
-        //     return 'new_dxcc';
-        // }
 
         // 4. Signal strength
-        if (snr >= (this.config.dashboard?.snrStrongThreshold ?? 0)) {
+        if (snr >= (this.config.snrStrongThreshold ?? 0)) {
             return 'strong';
         }
-        if (snr <= (this.config.dashboard?.snrWeakThreshold ?? -15)) {
+        if (snr <= (this.config.snrWeakThreshold ?? -15)) {
             return 'weak';
         }
 
@@ -266,12 +321,14 @@ export class StationTracker extends EventEmitter {
         return 'normal';
     }
 
+    // === State Access ===
+
     public getSliceStates(): SliceState[] {
         const states: SliceState[] = [];
 
         for (const slice of this.slices.values()) {
             const stations = Array.from(slice.stations.values())
-                .sort((a, b) => b.lastSeen - a.lastSeen); // Most recent first
+                .sort((a, b) => b.lastSeen - a.lastSeen);
 
             states.push({
                 id: slice.id,
@@ -288,37 +345,63 @@ export class StationTracker extends EventEmitter {
         return states;
     }
 
+    public getStationCount(): number {
+        let count = 0;
+        for (const slice of this.slices.values()) {
+            count += slice.stations.size;
+        }
+        return count;
+    }
+
+    public getColors(): Record<StationStatus, string> {
+        return {
+            worked: this.config.colors?.worked ?? '#6b7280',
+            normal: this.config.colors?.normal ?? '#3b82f6',
+            weak: this.config.colors?.weak ?? '#eab308',
+            strong: this.config.colors?.strong ?? '#22c55e',
+            priority: this.config.colors?.priority ?? '#f97316',
+            new_dxcc: this.config.colors?.new_dxcc ?? '#ec4899',
+        };
+    }
+
+    // === Cleanup ===
+
+    private startCleanup(): void {
+        this.cleanupInterval = setInterval(() => {
+            this.cleanupExpiredStations();
+        }, 10000);
+    }
+
+    private cleanupExpiredStations(): void {
+        const now = Date.now();
+        const lifetimeMs = (this.config.stationLifetimeSeconds ?? 120) * 1000;
+        let changed = false;
+
+        for (const slice of this.slices.values()) {
+            for (const [callsign, station] of slice.stations) {
+                if (now - station.lastSeen > lifetimeMs) {
+                    slice.stations.delete(callsign);
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed) {
+            this.emitUpdate();
+        }
+    }
+
     private emitUpdate(): void {
         this.emit('update', this.getSliceStates());
     }
 
-    public reloadAdifLog(): void {
-        this.adifReader.reload();
-
-        // Re-compute all station statuses
-        for (const slice of this.slices.values()) {
-            for (const station of slice.stations.values()) {
-                station.status = this.computeStatus(
-                    station.callsign,
-                    station.snr,
-                    slice.dialFrequency,
-                    slice.mode
-                );
-            }
-        }
-
-        this.emitUpdate();
-    }
-
-    public updateConfig(config: Config): void {
-        this.config = config;
-        this.adifReader.setPath(config.dashboard?.adifLogPath ?? '');
-    }
+    // === Lifecycle ===
 
     public stop(): void {
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
         }
+        console.log('[Dashboard] Stopped');
     }
 }

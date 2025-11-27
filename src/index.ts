@@ -1,4 +1,4 @@
-import { loadConfig } from './config';
+import { loadConfig } from './SettingsManager';
 import { FlexClient } from './flex/FlexClient';
 import { discoverFlexRadio } from './flex/FlexDiscovery';
 import { WsjtxManager } from './wsjtx/WsjtxManager';

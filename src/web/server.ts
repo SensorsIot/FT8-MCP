@@ -2,7 +2,7 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import path from 'path';
-import { Config, saveConfig, loadConfig } from '../config';
+import { Config, saveConfig, loadConfig, ConfigChangeLevel } from '../SettingsManager';
 import { WsjtxManager } from '../wsjtx/WsjtxManager';
 import { SliceState, StationsUpdateMessage } from '../wsjtx/types';
 import fs from 'fs';
@@ -56,11 +56,39 @@ export class WebServer {
         });
 
         // API: Update config
-        this.app.post('/api/config', (req, res) => {
+        this.app.post('/api/config', async (req, res) => {
             try {
-                const newConfig = saveConfig(req.body);
-                this.config = newConfig;
-                res.json({ success: true, config: newConfig, message: 'Config saved. Restart the server to apply changes.' });
+                const result = saveConfig(req.body);
+                this.config = result.config;
+
+                // Generate appropriate message based on change level
+                let message: string;
+                let action: 'none' | 'wsjtx_restart' | 'app_restart' = 'none';
+
+                if (result.changedFields.length === 0) {
+                    message = 'No changes detected.';
+                } else if (result.changeLevel === 'live') {
+                    message = 'Config applied immediately.';
+                    // Broadcast config update to all WebSocket clients
+                    this.broadcastConfigUpdate();
+                } else if (result.changeLevel === 'wsjtx_restart') {
+                    message = 'Config saved. WSJT-X instances will be restarted to apply changes.';
+                    action = 'wsjtx_restart';
+                    // Restart WSJT-X instances
+                    await this.wsjtxManager.restartAllInstances();
+                } else {
+                    message = 'Config saved. Please restart the server to apply changes (mode, port, or host changed).';
+                    action = 'app_restart';
+                }
+
+                res.json({
+                    success: true,
+                    config: result.config,
+                    message,
+                    changeLevel: result.changeLevel,
+                    changedFields: result.changedFields,
+                    action
+                });
             } catch (error) {
                 res.status(400).json({ success: false, error: String(error) });
             }
@@ -116,14 +144,7 @@ export class WebServer {
 
             ws.on('message', (message: string) => {
                 console.log('Received:', message);
-                try {
-                    const data = JSON.parse(message.toString());
-                    if (data.type === 'RELOAD_ADIF') {
-                        this.wsjtxManager.reloadAdifLog();
-                    }
-                } catch (e) {
-                    // Ignore invalid messages
-                }
+                // WebSocket messages from dashboard (future expansion)
             });
         });
 
@@ -160,6 +181,20 @@ export class WebServer {
         const message: StationsUpdateMessage = {
             type: 'STATIONS_UPDATE',
             slices,
+            config: this.getDefaultDashboardConfig(),
+        };
+        const json = JSON.stringify(message);
+
+        this.wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(json);
+            }
+        });
+    }
+
+    private broadcastConfigUpdate(): void {
+        const message = {
+            type: 'CONFIG_UPDATE',
             config: this.getDefaultDashboardConfig(),
         };
         const json = JSON.stringify(message);

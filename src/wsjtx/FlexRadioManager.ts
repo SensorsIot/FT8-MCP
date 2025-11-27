@@ -10,16 +10,16 @@ import { StateManager, ChannelUdpManager, frequencyToBand } from '../state';
 const HZ_PER_BIN = 1.4648;
 
 /**
- * SliceMasterLogic - Manages WSJT-X instances for FlexRadio slices
+ * FlexRadioManager - Manages WSJT-X instances for FlexRadio slices
  *
- * Architecture (mimics SliceMaster):
+ * Architecture:
  * - Each FlexRadio slice gets its own WSJT-X instance
  * - WSJT-X connects to our HRD CAT server (Ham Radio Deluxe protocol)
  * - We translate HRD commands to FlexRadio API calls
  * - Bidirectional sync: WSJT-X tune -> slice moves, slice tune -> WSJT-X follows
  * - No SmartSDR CAT needed - our HRD TCP shim replaces it
  *
- * Now integrated with StateManager and ChannelUdpManager for:
+ * Integrated with StateManager and ChannelUdpManager for:
  * - Unified state tracking (McpState)
  * - Dynamic per-channel UDP listeners
  * - Decode aggregation with channel context
@@ -29,7 +29,7 @@ export interface StationConfig {
     grid?: string;
 }
 
-export class SliceMasterLogic extends EventEmitter {
+export class FlexRadioManager extends EventEmitter {
     private processManager: ProcessManager;
     private sliceToInstance: Map<string, string> = new Map();
     private sliceIndexMap: Map<string, number> = new Map();
@@ -68,7 +68,7 @@ export class SliceMasterLogic extends EventEmitter {
      */
     public setStationConfig(config: StationConfig): void {
         this.stationConfig = config;
-        console.log(`[SliceMaster] Station config updated: ${config.callsign || '(no callsign)'} / ${config.grid || '(no grid)'}`);
+        console.log(`[FlexRadio] Station config updated: ${config.callsign || '(no callsign)'} / ${config.grid || '(no grid)'}`);
     }
 
     private getCatPort(sliceIndex: number): number {
@@ -106,17 +106,17 @@ export class SliceMasterLogic extends EventEmitter {
 
         // Forward HRD commands to FlexRadio via events
         server.on('frequency-change', (idx: number, freq: number) => {
-            console.log(`[SliceMaster] WSJT-X Slice ${this.getSliceLetter(idx)} tuned to ${(freq / 1e6).toFixed(6)} MHz`);
+            console.log(`[FlexRadio] WSJT-X Slice ${this.getSliceLetter(idx)} tuned to ${(freq / 1e6).toFixed(6)} MHz`);
             this.emit('cat-frequency-change', idx, freq);
         });
 
         server.on('mode-change', (idx: number, mode: string) => {
-            console.log(`[SliceMaster] WSJT-X Slice ${this.getSliceLetter(idx)} mode changed to ${mode}`);
+            console.log(`[FlexRadio] WSJT-X Slice ${this.getSliceLetter(idx)} mode changed to ${mode}`);
             this.emit('cat-mode-change', idx, mode);
         });
 
         server.on('ptt-change', (idx: number, ptt: boolean) => {
-            console.log(`[SliceMaster] WSJT-X Slice ${this.getSliceLetter(idx)} PTT ${ptt ? 'ON' : 'OFF'}`);
+            console.log(`[FlexRadio] WSJT-X Slice ${this.getSliceLetter(idx)} PTT ${ptt ? 'ON' : 'OFF'}`);
             this.emit('cat-ptt-change', idx, ptt);
         });
 
@@ -145,7 +145,7 @@ export class SliceMasterLogic extends EventEmitter {
         const server = this.catServers.get(sliceIndex);
         if (server) {
             server.setFrequency(frequency);
-            console.log(`[SliceMaster] Updated CAT server ${this.getSliceLetter(sliceIndex)} frequency to ${(frequency / 1e6).toFixed(6)} MHz`);
+            console.log(`[FlexRadio] Updated CAT server ${this.getSliceLetter(sliceIndex)} frequency to ${(frequency / 1e6).toFixed(6)} MHz`);
         }
     }
 
@@ -354,5 +354,88 @@ export class SliceMasterLogic extends EventEmitter {
         if (this.channelUdpManager) {
             this.channelUdpManager.stopAll();
         }
+    }
+
+    /**
+     * Restart all WSJT-X instances (for config changes)
+     * Preserves slice mappings and frequencies
+     */
+    public async restartAllInstances(): Promise<void> {
+        console.log('[FlexRadio] Restarting all WSJT-X instances...');
+
+        // Save current slice states before stopping
+        const sliceStates: Array<{
+            sliceId: string;
+            instanceName: string;
+            sliceIndex: number;
+            frequency: number;
+        }> = [];
+
+        for (const [sliceId, instanceName] of this.sliceToInstance.entries()) {
+            const sliceIndex = this.sliceIndexMap.get(sliceId);
+            if (sliceIndex !== undefined) {
+                const catServer = this.catServers.get(sliceIndex);
+                const frequency = catServer?.getFrequency() || 14074000;
+                sliceStates.push({ sliceId, instanceName, sliceIndex, frequency });
+            }
+        }
+
+        // Stop all WSJT-X processes (but keep CAT servers running)
+        for (const state of sliceStates) {
+            this.processManager.stopInstance(state.instanceName);
+        }
+
+        // Wait for processes to exit
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Restart each instance
+        for (const state of sliceStates) {
+            const sliceLetter = this.getSliceLetter(state.sliceIndex);
+            const daxChannel = this.getDaxChannel(state.sliceIndex);
+            const catPort = this.getCatPort(state.sliceIndex);
+            const udpPort = 2237 + state.sliceIndex;
+
+            console.log(`[FlexRadio] Restarting ${state.instanceName}...`);
+
+            // Reconfigure WSJT-X INI (in case config changed)
+            const layout = calculateLayout({ sliceIndex: state.sliceIndex });
+            const targetFreqHz = 2500;
+            const plotWidth = Math.ceil(targetFreqHz / (layout.binsPerPixel * HZ_PER_BIN));
+
+            configureWideGraph(state.instanceName, {
+                binsPerPixel: layout.binsPerPixel,
+                startFreq: 0,
+                hideControls: true,
+                plotWidth: plotWidth,
+            });
+
+            configureRigForHrdCat(state.instanceName, {
+                sliceIndex: state.sliceIndex,
+                catPort: catPort,
+                daxChannel: daxChannel,
+                udpPort: udpPort,
+                callsign: this.stationConfig.callsign,
+                grid: this.stationConfig.grid,
+            });
+
+            // Restart the process
+            try {
+                this.processManager.startInstance({
+                    name: state.instanceName,
+                    rigName: state.instanceName,
+                    sliceIndex: state.sliceIndex,
+                    daxChannel: daxChannel,
+                });
+
+                // Reposition windows
+                positionWsjtxWindows(state.instanceName, state.sliceIndex).catch(err => {
+                    console.error(`Failed to position windows for ${state.instanceName}:`, err);
+                });
+            } catch (error) {
+                console.error(`[FlexRadio] Failed to restart ${state.instanceName}:`, error);
+            }
+        }
+
+        console.log('[FlexRadio] All instances restarted');
     }
 }

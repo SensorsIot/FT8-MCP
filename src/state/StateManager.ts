@@ -3,12 +3,12 @@
  *
  * Per FSD v3 §3, §11:
  * - Owns the canonical McpState object
- * - Receives updates from FlexClient, ChannelUdpManager, SliceMasterLogic
+ * - Receives updates from FlexClient, ChannelUdpManager, FlexRadioManager
  * - Exposes state via getState() for MCP tools and resources
  * - Emits 'state-changed' events for WebSocket push to dashboard
  *
  * This replaces the implicit state scattered across FlexClient,
- * SliceMasterLogic, and StationTracker.
+ * FlexRadioManager, and StationTracker.
  */
 
 import { EventEmitter } from 'events';
