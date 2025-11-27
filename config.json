@@ -1,7 +1,7 @@
 {
   "mode": "FLEX",
   "wsjtx": {
-    "path": "C:\\WSJT-old\\wsjtx\\bin\\wsjtx.exe"
+    "path": "C:\\WSJT\\wsjtx\\bin\\wsjtx.exe"
   },
   "flex": {
     "host": "10.99.6.135",

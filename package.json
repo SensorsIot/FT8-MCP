@@ -31,7 +31,7 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "ws": "^8.18.3",
-    "zod": "^3.23.8"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/serialport": "^8.0.5"

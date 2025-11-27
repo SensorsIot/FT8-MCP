@@ -213,9 +213,14 @@ export class WsjtxManager extends EventEmitter {
         } else {
             console.log('Starting WSJT-X Manager in FLEX mode.');
             // Slice Master will be initialized when FlexClient is connected
+            // In FLEX mode, ChannelUdpManager handles per-channel UDP - don't start legacy listener
         }
 
-        this.udpListener.start();
+        // Only start legacy UDP listener in STANDARD mode
+        // In FLEX mode, ChannelUdpManager handles per-channel UDP communication
+        if (this.config.mode === 'STANDARD') {
+            this.udpListener.start();
+        }
     }
 
     public setFlexClient(flexClient: any): void {

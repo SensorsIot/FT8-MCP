@@ -106,41 +106,6 @@ export class WsjtxMcpServer {
 
         // === Rig Control Tools (per Rig-control.md) ===
 
-        // Tool: rig_get_state
-        this.server.tool(
-            "rig_get_state",
-            "Get current state of all FlexRadio slices",
-            {},
-            async () => {
-                if (!this.flexClient) {
-                    return {
-                        content: [{ type: "text" as const, text: "Error: Not connected to FlexRadio" }],
-                        isError: true,
-                    };
-                }
-
-                const slices = this.flexClient.getSlices();
-                const state = slices.map((slice) => {
-                    // Extract slice index from slice.id (e.g., "slice_0" -> 0)
-                    const match = slice.id.match(/slice_(\d+)/);
-                    const index = match ? parseInt(match[1]) : 0;
-                    return {
-                        id: String.fromCharCode(65 + index),  // A, B, C, D
-                        index: index,
-                        freq_hz: slice.frequency,
-                        freq_mhz: (slice.frequency / 1e6).toFixed(6),
-                        mode: slice.mode,
-                        dax_rx_channel: slice.daxChannel || (index + 1),
-                        is_active: slice.active
-                    };
-                });
-
-                return {
-                    content: [{ type: "text" as const, text: JSON.stringify({ slices: state }, null, 2) }],
-                };
-            }
-        );
-
         // Tool: rig_tune_slice
         this.server.tool(
             "rig_tune_slice",
