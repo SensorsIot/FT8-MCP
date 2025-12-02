@@ -12,6 +12,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import {
     McpState,
     McpConfig,
@@ -19,7 +20,9 @@ import {
     ChannelStatus,
     WsjtxInstanceState,
     LogbookIndex,
+    InternalDecodeRecord,
     DecodeRecord,
+    DecodesSnapshot,
     QsoRecord,
     WorkedEntry,
     frequencyToBand,
@@ -35,6 +38,12 @@ const HEARTBEAT_TIMEOUT_MS = 30000;
 // Status update debounce to avoid flooding UI
 const STATUS_DEBOUNCE_MS = 100;
 
+// Maximum restart attempts before giving up (v7 FSD §12.4)
+export const MAX_RESTART_ATTEMPTS = 5;
+
+// Cooldown period before allowing restart after failure (prevent rapid restart loops)
+const RESTART_COOLDOWN_MS = 5000;
+
 export interface StateManagerConfig {
     callsign: string;
     grid: string;
@@ -44,7 +53,7 @@ export interface StateManagerConfig {
 
 export class StateManager extends EventEmitter {
     private state: McpState;
-    private decodeBuffers: Map<number, DecodeRecord[]> = new Map();
+    private decodeBuffers: Map<number, InternalDecodeRecord[]> = new Map();
     private heartbeatCheckInterval: NodeJS.Timeout | null = null;
     private pendingUpdate: NodeJS.Timeout | null = null;
 
@@ -105,9 +114,9 @@ export class StateManager extends EventEmitter {
     }
 
     /**
-     * Get recent decodes for a channel
+     * Get recent decodes for a channel (internal format)
      */
-    public getDecodes(channelIndex: number, sinceMs?: number): DecodeRecord[] {
+    public getDecodes(channelIndex: number, sinceMs?: number): InternalDecodeRecord[] {
         const buffer = this.decodeBuffers.get(channelIndex);
         if (!buffer) return [];
 
@@ -120,10 +129,10 @@ export class StateManager extends EventEmitter {
     }
 
     /**
-     * Get all recent decodes across all channels
+     * Get all recent decodes across all channels (internal format)
      */
-    public getAllDecodes(sinceMs?: number): DecodeRecord[] {
-        const all: DecodeRecord[] = [];
+    public getAllDecodes(sinceMs?: number): InternalDecodeRecord[] {
+        const all: InternalDecodeRecord[] = [];
         for (let i = 0; i < 4; i++) {
             all.push(...this.getDecodes(i, sinceMs));
         }
@@ -307,7 +316,7 @@ export class StateManager extends EventEmitter {
     /**
      * Add a decode to the buffer and update state
      */
-    public addDecode(decode: DecodeRecord): void {
+    public addDecode(decode: InternalDecodeRecord): void {
         const channelIndex = decode.channel_index;
         if (channelIndex < 0 || channelIndex >= 4) return;
 
@@ -504,10 +513,62 @@ export class StateManager extends EventEmitter {
         this.scheduleUpdate();
     }
 
+    /**
+     * Assemble a DecodesSnapshot from all channels (v7 FSD §13.4)
+     *
+     * Converts internal decodes to MCP-facing format:
+     * - Removes internal routing fields (channel_index, slice_id)
+     * - Adds unique id field
+     * - Wraps in snapshot with snapshot_id and generated_at
+     *
+     * @param sinceMs Optional time window in milliseconds
+     * @returns DecodesSnapshot for MCP exposure
+     */
+    public getDecodesSnapshot(sinceMs?: number): DecodesSnapshot {
+        const internalDecodes = this.getAllDecodes(sinceMs);
+
+        // Convert InternalDecodeRecord → DecodeRecord
+        const decodes: DecodeRecord[] = internalDecodes.map((internal, index) => {
+            // Generate unique ID within this snapshot
+            const id = `${internal.slice_id}-${internal.timestamp}-${index}`;
+
+            // Create MCP-facing decode record (no internal routing fields)
+            return {
+                id,
+                timestamp: internal.timestamp,
+                band: internal.band,
+                mode: internal.mode,
+                dial_hz: internal.dial_hz,
+                audio_offset_hz: internal.audio_offset_hz,
+                rf_hz: internal.rf_hz,
+                snr_db: internal.snr_db,
+                dt_sec: internal.dt_sec,
+                call: internal.call,
+                grid: internal.grid,
+                is_cq: internal.is_cq,
+                is_my_call: internal.is_my_call,
+                is_directed_cq_to_me: internal.is_directed_cq_to_me,
+                cq_target_token: internal.cq_target_token,
+                raw_text: internal.raw_text,
+                is_new: internal.is_new,
+                low_confidence: internal.low_confidence,
+                off_air: internal.off_air,
+            };
+        });
+
+        // Create snapshot with metadata
+        return {
+            snapshot_id: randomUUID(),
+            generated_at: new Date().toISOString(),
+            decodes,
+        };
+    }
+
     // === Internal Methods ===
 
     /**
-     * Start periodic heartbeat checker
+     * Start periodic heartbeat checker (v7 FSD §12.4)
+     * Monitors UDP heartbeats and triggers auto-restart when needed
      */
     private startHeartbeatChecker(): void {
         this.heartbeatCheckInterval = setInterval(() => {
@@ -521,6 +582,43 @@ export class StateManager extends EventEmitter {
                         channel.status = 'offline';
                         console.log(`[StateManager] Channel ${channel.id} disconnected (heartbeat timeout)`);
                         changed = true;
+
+                        // Check if associated instance should be auto-restarted
+                        const instance = this.state.wsjtx_instances.find(
+                            i => i.channel_index === channel.index
+                        );
+
+                        if (instance && instance.running) {
+                            // Mark instance as stopped with error
+                            instance.running = false;
+                            instance.error = 'Heartbeat timeout';
+
+                            // Check if we should attempt auto-restart
+                            const timeSinceStart = now - (instance.last_start || 0);
+                            if (
+                                instance.restart_count < MAX_RESTART_ATTEMPTS &&
+                                timeSinceStart > RESTART_COOLDOWN_MS
+                            ) {
+                                console.log(
+                                    `[StateManager] Channel ${channel.id} needs restart ` +
+                                    `(attempt ${instance.restart_count + 1}/${MAX_RESTART_ATTEMPTS})`
+                                );
+
+                                // Emit event for WsjtxManager to handle restart
+                                this.emit('channel-needs-restart', {
+                                    channelIndex: channel.index,
+                                    instanceName: instance.name,
+                                    restartCount: instance.restart_count,
+                                });
+                            } else if (instance.restart_count >= MAX_RESTART_ATTEMPTS) {
+                                console.error(
+                                    `[StateManager] Channel ${channel.id} exceeded MAX_RESTART_ATTEMPTS ` +
+                                    `(${instance.restart_count}), giving up`
+                                );
+                                channel.status = 'error';
+                                instance.error = `Max restart attempts exceeded (${MAX_RESTART_ATTEMPTS})`;
+                            }
+                        }
                     }
                 }
             }

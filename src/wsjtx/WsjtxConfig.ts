@@ -51,6 +51,7 @@ export interface HrdCatConfig {
     udpPort?: number;           // UDP server port (2237-2240)
     callsign?: string;          // Station callsign (e.g., HB9BLA)
     grid?: string;              // Station grid locator (e.g., JN37VL)
+    wideGraph?: WideGraphConfig; // Optional Wide Graph overrides
 }
 
 // HamlibRig IDs for FlexRadio SmartSDR Slices
@@ -189,6 +190,27 @@ function parseIni(content: string): Map<string, Map<string, string>> {
 }
 
 /**
+ * Load the WSJT-X template INI file
+ * This template MUST exist as part of the project
+ * @throws Error if template file is not found
+ */
+function loadTemplateIni(): Map<string, Map<string, string>> {
+    const templateDir = path.join(__dirname, '..', '..', 'templates');
+    const templatePath = path.join(templateDir, 'wsjtx-template.ini');
+
+    if (!fs.existsSync(templatePath)) {
+        throw new Error(
+            `WSJT-X template file not found: ${templatePath}\n` +
+            `The template file is required for proper WSJT-X configuration.`
+        );
+    }
+
+    console.log(`  Loading template from ${templatePath}`);
+    const content = fs.readFileSync(templatePath, 'utf-8');
+    return parseIni(content);
+}
+
+/**
  * Serialize sections back to INI format
  */
 function serializeIni(sections: Map<string, Map<string, string>>): string {
@@ -225,32 +247,8 @@ export function configureWideGraph(
         fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let sections: Map<string, Map<string, string>>;
-
-    // Read existing config, or use our template for new instances
-    if (fs.existsSync(iniPath)) {
-        const content = fs.readFileSync(iniPath, 'utf-8');
-        sections = parseIni(content);
-    } else {
-        // First try our custom template (has correct settings)
-        const templatePath = path.join(__dirname, '..', '..', 'templates', 'wsjtx-template.ini');
-        if (fs.existsSync(templatePath)) {
-            console.log(`  Using custom template from ${templatePath}`);
-            const content = fs.readFileSync(templatePath, 'utf-8');
-            sections = parseIni(content);
-        } else {
-            // Fall back to default WSJT-X.ini (not ideal, has wrong settings)
-            const defaultIniPath = path.join(configDir, 'WSJT-X.ini');
-            if (fs.existsSync(defaultIniPath)) {
-                console.log(`  Copying base config from WSJT-X.ini (warning: may have incorrect settings)`);
-                const content = fs.readFileSync(defaultIniPath, 'utf-8');
-                sections = parseIni(content);
-            } else {
-                console.log(`  Creating minimal config (no template found)`);
-                sections = new Map();
-            }
-        }
-    }
+    // Always load from template to ensure valid configuration
+    const sections = loadTemplateIni();
 
     // Ensure WideGraph section exists
     if (!sections.has('WideGraph')) {
@@ -380,15 +378,8 @@ export function configureRigForSmartCat(
         fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let sections: Map<string, Map<string, string>>;
-
-    // Read existing config or create new
-    if (fs.existsSync(iniPath)) {
-        const content = fs.readFileSync(iniPath, 'utf-8');
-        sections = parseIni(content);
-    } else {
-        sections = new Map();
-    }
+    // Always load from template to ensure valid configuration
+    const sections = loadTemplateIni();
 
     // Ensure Configuration section exists
     if (!sections.has('Configuration')) {
@@ -465,15 +456,8 @@ export function configureRigForTs2000(
         fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let sections: Map<string, Map<string, string>>;
-
-    // Read existing config or create new
-    if (fs.existsSync(iniPath)) {
-        const content = fs.readFileSync(iniPath, 'utf-8');
-        sections = parseIni(content);
-    } else {
-        sections = new Map();
-    }
+    // Always load from template to ensure valid configuration
+    const sections = loadTemplateIni();
 
     // Ensure Configuration section exists
     if (!sections.has('Configuration')) {
@@ -550,14 +534,8 @@ export function configureRigForNetworkCat(
         fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let sections: Map<string, Map<string, string>>;
-
-    if (fs.existsSync(iniPath)) {
-        const content = fs.readFileSync(iniPath, 'utf-8');
-        sections = parseIni(content);
-    } else {
-        sections = new Map();
-    }
+    // Always load from template to ensure valid configuration
+    const sections = loadTemplateIni();
 
     if (!sections.has('Configuration')) {
         sections.set('Configuration', new Map());
@@ -637,14 +615,8 @@ export function configureRigForFlexSlice(
         fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let sections: Map<string, Map<string, string>>;
-
-    if (fs.existsSync(iniPath)) {
-        const content = fs.readFileSync(iniPath, 'utf-8');
-        sections = parseIni(content);
-    } else {
-        sections = new Map();
-    }
+    // Always load from template to ensure valid configuration
+    const sections = loadTemplateIni();
 
     if (!sections.has('Configuration')) {
         sections.set('Configuration', new Map());
@@ -721,6 +693,7 @@ export function configureRigForHrdCat(
     const daxChannel = config.daxChannel || (sliceIndex + 1);
     const udpPort = config.udpPort || (2237 + sliceIndex);
     const sliceLetter = String.fromCharCode(65 + sliceIndex);
+    const wideGraphConfig = config.wideGraph;
 
     console.log(`Configuring Rig for HRD CAT - Slice ${sliceLetter} (${rigName}):`);
     console.log(`  INI path: ${iniPath}`);
@@ -735,22 +708,8 @@ export function configureRigForHrdCat(
         fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let sections: Map<string, Map<string, string>>;
-
-    if (fs.existsSync(iniPath)) {
-        const content = fs.readFileSync(iniPath, 'utf-8');
-        sections = parseIni(content);
-    } else {
-        // Use template if available
-        const templatePath = path.join(__dirname, '..', '..', 'templates', 'wsjtx-template.ini');
-        if (fs.existsSync(templatePath)) {
-            console.log(`  Using template from ${templatePath}`);
-            const content = fs.readFileSync(templatePath, 'utf-8');
-            sections = parseIni(content);
-        } else {
-            sections = new Map();
-        }
-    }
+    // Always load from template to ensure valid configuration
+    const sections = loadTemplateIni();
 
     if (!sections.has('Configuration')) {
         sections.set('Configuration', new Map());
@@ -804,10 +763,72 @@ export function configureRigForHrdCat(
         console.log(`  Grid: ${config.grid}`);
     }
 
+    // CRITICAL MCP OPERATIONAL SETTINGS - ensure Monitor is enabled for audio
+    configSection.set('MonitorOFF', 'false');  // CRITICAL: Monitor enabled for decoding
+    configSection.set('MonitorLastUsed', 'false');
+
+    // Ensure Common section exists for mode settings
+    if (!sections.has('Common')) {
+        sections.set('Common', new Map());
+    }
+    const commonSection = sections.get('Common')!;
+
+    // Set critical operational defaults for MCP
+    commonSection.set('Mode', 'FT8');           // Default mode
+    commonSection.set('AutoSeq', 'true');       // Enable auto-sequence
+    commonSection.set('RxAll', 'false');        // Don't show all messages (reduces noise)
+    commonSection.set('SaveNone', 'true');      // Don't save audio files by default
+    commonSection.set('NDepth', '3');           // Fast decode depth
+    commonSection.set('RxFreq', '1500');        // Center frequency
+    commonSection.set('TxFreq', '1500');        // Default TX frequency
+    commonSection.set('HoldTxFreq', 'true');    // Hold TX frequency for automated QSO
+
+    // Wide Graph overrides (apply here so the final INI includes them)
+    if (!sections.has('WideGraph')) {
+        sections.set('WideGraph', new Map());
+    }
+    const wideGraphSection = sections.get('WideGraph')!;
+    if (wideGraphConfig) {
+        if (wideGraphConfig.binsPerPixel !== undefined) {
+            wideGraphSection.set('BinsPerPixel', wideGraphConfig.binsPerPixel.toString());
+        }
+        if (wideGraphConfig.startFreq !== undefined) {
+            wideGraphSection.set('StartFreq', wideGraphConfig.startFreq.toString());
+        }
+        if (wideGraphConfig.plotZero !== undefined) {
+            wideGraphSection.set('PlotZero', wideGraphConfig.plotZero.toString());
+        }
+        if (wideGraphConfig.plotGain !== undefined) {
+            wideGraphSection.set('PlotGain', wideGraphConfig.plotGain.toString());
+        }
+        if (wideGraphConfig.plotWidth !== undefined) {
+            wideGraphSection.set('PlotWidth', wideGraphConfig.plotWidth.toString());
+        }
+    }
+
+    // HideControls lives in Configuration; remove stale geometry caches to respect runtime positioning
+    if (wideGraphConfig?.hideControls !== undefined) {
+        configSection.set('HideControls', wideGraphConfig.hideControls ? 'true' : 'false');
+    }
+    if (wideGraphSection.has('geometry')) {
+        wideGraphSection.delete('geometry');
+    }
+    if (sections.has('MainWindow')) {
+        const mainWindow = sections.get('MainWindow')!;
+        if (mainWindow.has('geometry')) {
+            mainWindow.delete('geometry');
+        }
+        if (mainWindow.has('geometryNoControls')) {
+            mainWindow.delete('geometryNoControls');
+        }
+    }
+
     console.log(`  Rig: Ham Radio Deluxe`);
     console.log(`  Network: 127.0.0.1:${catPort}`);
     console.log(`  Audio In: ${daxRx}`);
     console.log(`  Audio Out: ${daxTx}`);
+    console.log(`  Monitor: Enabled (MonitorOFF=false)`);
+    console.log(`  Mode: FT8 with AutoSeq`)
 
     try {
         const content = serializeIni(sections);

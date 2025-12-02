@@ -78,4 +78,34 @@ export class FlexClient extends EventEmitter {
     public setSliceTx(sliceIndex: number, tx: boolean): void {
         this.vita49Client.setSliceTx(sliceIndex, tx);
     }
+
+    /**
+     * Set DAX channel for a slice
+     */
+    public setSliceDax(sliceIndex: number, daxChannel: number): void {
+        this.vita49Client.setSliceDax(sliceIndex, daxChannel);
+    }
+
+    /**
+     * Create a DAX RX audio stream for a channel
+     * This enables audio streaming from the radio to the DAX virtual audio device
+     */
+    public createDaxRxAudioStream(daxChannel: number): void {
+        this.vita49Client.createDaxRxAudioStream(daxChannel);
+    }
+
+    /**
+     * Create a DAX TX audio stream
+     * This enables audio streaming from the DAX virtual audio device to the radio
+     */
+    public createDaxTxAudioStream(): void {
+        this.vita49Client.createDaxTxAudioStream();
+    }
+
+    /**
+     * Request DAX stream list for debugging
+     */
+    public listDaxStreams(): void {
+        this.vita49Client.listDaxStreams();
+    }
 }

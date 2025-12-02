@@ -97,8 +97,8 @@ export class UdpSender {
         body.writeUInt8(0, offset);
         offset += 1;
 
-        // Modifiers (quint8)
-        body.writeUInt8(0, offset);
+        // Modifiers (quint8) - 0x02 = Shift modifier (enables TX)
+        body.writeUInt8(0x02, offset);
         offset += 1;
 
         const packet = Buffer.concat([header, body.slice(0, offset)]);
@@ -277,6 +277,16 @@ export class UdpSender {
         this.send(packet);
 
         console.log(`[UDP] Sent SetFrequency: ${frequencyHz} Hz${mode ? `, mode=${mode}` : ''} to port ${this.targetPort}`);
+    }
+
+    /**
+     * Send Close message to gracefully shut down WSJT-X instance
+     * Message Type 6 - requests WSJT-X to close gracefully
+     */
+    public sendClose(id: string): void {
+        const header = this.createHeader(WsjtxMessageType.CLOSE, id);
+        this.send(header);
+        console.log(`[UDP] Sent Close message to ${id} on port ${this.targetPort}`);
     }
 
     /**

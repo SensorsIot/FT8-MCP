@@ -23,6 +23,7 @@ dist/
 .claude/
 CLAUDE.md
 GEMINI.md
+AGENTS.md
 .codex/
 .copilot/
 .cursor/
@@ -32,3 +33,10 @@ GEMINI.md
 tmp/
 temp/
 nul
+
+# Test/debug files
+slices.json
+slices-response.json
+
+# Windows artifacts
+C:UsersHB9BLsuperclaude.bat

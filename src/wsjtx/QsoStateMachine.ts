@@ -22,6 +22,7 @@ export interface QsoConfig {
     udpPort?: number;
     timeout?: number; // milliseconds
     maxRetries?: number;
+    initialDecode?: WsjtxDecode; // The decode to respond to (simulates double-click)
 }
 
 export class QsoStateMachine extends EventEmitter {
@@ -90,8 +91,18 @@ export class QsoStateMachine extends EventEmitter {
     }
 
     private callCQ(): void {
-        const message = `CQ ${this.config.myCallsign} ${this.config.myGrid}`;
-        this.sendMessage(message);
+        // If we have an initialDecode, use Reply (simulates double-click on their CQ)
+        // This is the proper way to initiate a QSO in WSJT-X
+        if (this.config.initialDecode) {
+            const message = `${this.config.targetCallsign} ${this.config.myCallsign} ${this.config.myGrid}`;
+            console.log(`[QSO] Sending Reply (double-click): ${message}`);
+            this.sendMessage(message, this.config.initialDecode);
+        } else {
+            // Fallback: send as free text if no decode available
+            const message = `${this.config.targetCallsign} ${this.config.myCallsign} ${this.config.myGrid}`;
+            console.log(`[QSO] Sending FreeText: ${message}`);
+            this.sendMessage(message);
+        }
         this.setState(QsoState.WAITING_REPLY);
         this.startTimeout();
     }

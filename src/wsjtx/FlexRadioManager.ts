@@ -1,8 +1,8 @@
 import { EventEmitter } from 'events';
 import { FlexSlice } from '../flex/Vita49Client';
 import { ProcessManager } from './ProcessManager';
-import { positionWsjtxWindows, calculateLayout } from './WindowManager';
-import { configureWideGraph, configureRigForHrdCat, HRD_CAT_BASE_PORT } from './WsjtxConfig';
+import { positionWsjtxWindows, calculateLayout, detectScreenDimensions, ScreenDimensions } from './WindowManager';
+import { configureRigForHrdCat, HRD_CAT_BASE_PORT } from './WsjtxConfig';
 import { HrdCatServer } from '../cat/HrdCatServer';
 import { StateManager, ChannelUdpManager, frequencyToBand } from '../state';
 
@@ -36,6 +36,7 @@ export class FlexRadioManager extends EventEmitter {
     private catServers: Map<number, HrdCatServer> = new Map();
     private basePort: number;
     private stationConfig: StationConfig;
+    private screenDimensions: ScreenDimensions | null = null;
 
     // State management (optional - injected from WsjtxManager)
     private stateManager: StateManager | null = null;
@@ -69,6 +70,29 @@ export class FlexRadioManager extends EventEmitter {
     public setStationConfig(config: StationConfig): void {
         this.stationConfig = config;
         console.log(`[FlexRadio] Station config updated: ${config.callsign || '(no callsign)'} / ${config.grid || '(no grid)'}`);
+    }
+
+    /**
+        * Resolve screen dimensions once for layout calculations
+        */
+    private async getScreenDimensions(): Promise<ScreenDimensions> {
+        if (!this.screenDimensions) {
+            this.screenDimensions = await detectScreenDimensions();
+            console.log(`[FlexRadio] Detected screen: ${this.screenDimensions.width}x${this.screenDimensions.height}`);
+        }
+        return this.screenDimensions;
+    }
+
+    /**
+     * Calculate layout for a slice using detected screen dimensions
+     */
+    private async getLayoutForSlice(sliceIndex: number) {
+        const screen = await this.getScreenDimensions();
+        return calculateLayout({
+            sliceIndex,
+            screenWidth: screen.width,
+            screenHeight: screen.height,
+        });
     }
 
     private getCatPort(sliceIndex: number): number {
@@ -215,20 +239,10 @@ export class FlexRadioManager extends EventEmitter {
             }
         }
 
-        // Configure Wide Graph
-        const layout = calculateLayout({ sliceIndex });
+        const layout = await this.getLayoutForSlice(sliceIndex);
         const targetFreqHz = 2500;
         const plotWidth = Math.ceil(targetFreqHz / (layout.binsPerPixel * HZ_PER_BIN));
 
-        console.log(`  Configuring Wide Graph: BinsPerPixel=${layout.binsPerPixel}, PlotWidth=${plotWidth}`);
-        configureWideGraph(instanceName, {
-            binsPerPixel: layout.binsPerPixel,
-            startFreq: 0,
-            hideControls: true,
-            plotWidth: plotWidth,
-        });
-
-        // Configure Rig for HRD CAT (Ham Radio Deluxe protocol)
         configureRigForHrdCat(instanceName, {
             sliceIndex: sliceIndex,
             catPort: catPort,
@@ -236,6 +250,12 @@ export class FlexRadioManager extends EventEmitter {
             udpPort: udpPort,
             callsign: this.stationConfig.callsign,
             grid: this.stationConfig.grid,
+            wideGraph: {
+                binsPerPixel: layout.binsPerPixel,
+                plotWidth: plotWidth,
+                startFreq: 0,
+                hideControls: true,
+            },
         });
 
         try {
@@ -397,17 +417,9 @@ export class FlexRadioManager extends EventEmitter {
 
             console.log(`[FlexRadio] Restarting ${state.instanceName}...`);
 
-            // Reconfigure WSJT-X INI (in case config changed)
-            const layout = calculateLayout({ sliceIndex: state.sliceIndex });
+            const layout = await this.getLayoutForSlice(state.sliceIndex);
             const targetFreqHz = 2500;
             const plotWidth = Math.ceil(targetFreqHz / (layout.binsPerPixel * HZ_PER_BIN));
-
-            configureWideGraph(state.instanceName, {
-                binsPerPixel: layout.binsPerPixel,
-                startFreq: 0,
-                hideControls: true,
-                plotWidth: plotWidth,
-            });
 
             configureRigForHrdCat(state.instanceName, {
                 sliceIndex: state.sliceIndex,
@@ -416,6 +428,12 @@ export class FlexRadioManager extends EventEmitter {
                 udpPort: udpPort,
                 callsign: this.stationConfig.callsign,
                 grid: this.stationConfig.grid,
+                wideGraph: {
+                    binsPerPixel: layout.binsPerPixel,
+                    plotWidth: plotWidth,
+                    startFreq: 0,
+                    hideControls: true,
+                },
             });
 
             // Restart the process

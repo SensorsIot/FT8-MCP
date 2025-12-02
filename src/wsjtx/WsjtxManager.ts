@@ -10,7 +10,8 @@ import {
     StateManager,
     ChannelUdpManager,
     McpState,
-    DecodeRecord,
+    InternalDecodeRecord,
+    StationProfile,
 } from '../state';
 import { LogbookManager, QsoRecord } from '../logbook';
 import { DashboardManager } from '../dashboard';
@@ -42,9 +43,18 @@ export class WsjtxManager extends EventEmitter {
             stationLifetimeSeconds: config.dashboard?.stationLifetimeSeconds ?? 120,
         });
 
+        // Create StationProfile for CQ targeting
+        const stationProfile: StationProfile = {
+            my_call: config.station.callsign,
+            my_continent: config.station.continent || 'NA',
+            my_dxcc: config.station.dxcc || '',
+            my_prefixes: config.station.prefixes || [],
+        };
+
         this.channelUdpManager = new ChannelUdpManager(
             this.stateManager,
-            config.station.callsign
+            config.station.callsign,
+            stationProfile
         );
 
         // Initialize LogbookManager for ADIF logging and duplicate detection
@@ -84,19 +94,19 @@ export class WsjtxManager extends EventEmitter {
         });
 
         // Forward decodes from ChannelUdpManager to QSO state machines and external listeners
-        this.channelUdpManager.on('decode', (decode: DecodeRecord) => {
-            // Convert DecodeRecord to WsjtxDecode for backward compatibility
+        this.channelUdpManager.on('decode', (decode: InternalDecodeRecord) => {
+            // Convert InternalDecodeRecord to WsjtxDecode for backward compatibility
             const wsjtxDecode: WsjtxDecode = {
                 id: decode.slice_id,
-                newDecode: decode.new_decode,
+                newDecode: decode.is_new ?? false,
                 time: 0,  // Not available in DecodeRecord timestamp format
                 snr: decode.snr_db,
                 deltaTime: decode.dt_sec,
                 deltaFrequency: decode.audio_offset_hz,
                 mode: decode.mode,
                 message: decode.raw_text,
-                lowConfidence: decode.low_confidence,
-                offAir: decode.off_air,
+                lowConfidence: decode.low_confidence ?? false,
+                offAir: decode.off_air ?? false,
             };
 
             // Forward to dashboard manager
@@ -114,8 +124,9 @@ export class WsjtxManager extends EventEmitter {
         // Forward status updates
         this.channelUdpManager.on('status', (status: any) => {
             // Convert to WsjtxStatus for backward compatibility
+            // Use same ID format as decodes: "A", "B", "C", "D" (not "Slice-A")
             const wsjtxStatus: WsjtxStatus = {
-                id: `Slice-${String.fromCharCode(65 + status.channelIndex)}`,
+                id: String.fromCharCode(65 + status.channelIndex),
                 dialFrequency: status.dialFrequency,
                 mode: status.mode,
                 dxCall: status.dxCall || '',
@@ -253,23 +264,32 @@ export class WsjtxManager extends EventEmitter {
 
         // Handle slice events from FlexRadio
         flexClient.on('slice-added', (slice: any) => {
-            // Auto-tune slice to default band frequency if configured
-            const defaultBands = this.config.flex.defaultBands;
-            if (defaultBands && slice.id) {
-                // Extract slice index from ID (e.g., "slice_0" -> 0)
-                const match = slice.id.match(/slice_(\d+)/);
-                if (match) {
-                    const sliceIndex = parseInt(match[1]);
-                    if (sliceIndex < defaultBands.length) {
-                        const targetFreq = defaultBands[sliceIndex];
-                        const freqMHz = (targetFreq / 1e6).toFixed(3);
-                        console.log(`Auto-tuning slice ${sliceIndex} to ${freqMHz} MHz (default band)`);
+            // Extract slice index from ID (e.g., "slice_0" -> 0)
+            const match = slice.id?.match(/slice_(\d+)/);
+            const sliceIndex = match ? parseInt(match[1]) : 0;
 
-                        // Tune to FT8 frequency and set DIGU mode
-                        flexClient.tuneSlice(sliceIndex, targetFreq);
-                        flexClient.setSliceMode(sliceIndex, 'DIGU');
-                    }
-                }
+            // Set DAX channel for this slice (1-indexed: slice 0 -> DAX 1, slice 1 -> DAX 2, etc.)
+            const daxChannel = sliceIndex + 1;
+            console.log(`Setting DAX channel ${daxChannel} for slice ${sliceIndex}`);
+            flexClient.setSliceDax(sliceIndex, daxChannel);
+
+            // Create DAX RX audio stream for this channel to enable audio routing
+            console.log(`Creating DAX RX audio stream for channel ${daxChannel}`);
+            flexClient.createDaxRxAudioStream(daxChannel);
+
+            // Auto-tune slice to configured default band frequency
+            const defaultBands = this.config.flex.defaultBands;
+            if (defaultBands && sliceIndex < defaultBands.length) {
+                const targetFreq = defaultBands[sliceIndex];
+                const freqMHz = (targetFreq / 1e6).toFixed(3);
+                console.log(`Auto-tuning slice ${sliceIndex} to ${freqMHz} MHz (configured default)`);
+
+                // Tune to FT8 frequency and set DIGU mode
+                flexClient.tuneSlice(sliceIndex, targetFreq);
+                flexClient.setSliceMode(sliceIndex, 'DIGU');
+
+                // Update the slice object with the target frequency so HRD CAT server uses correct freq
+                slice.frequency = targetFreq;
             }
 
             if (this.flexRadioManager) {
@@ -339,11 +359,40 @@ export class WsjtxManager extends EventEmitter {
             throw new Error(`QSO already in progress for instance ${instanceId}`);
         }
 
+        // Find the most recent decode for the target callsign
+        // We search all channels in the last 60 seconds
+        const allDecodes = this.getAllDecodes(60000);
+        const targetDecode = allDecodes
+            .filter(d => d.call === targetCallsign)
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+
+        if (!targetDecode) {
+            throw new Error(`No recent decode found for ${targetCallsign}. Cannot initiate QSO.`);
+        }
+
+        // Convert DecodeRecord to WsjtxDecode format for the QSO state machine
+        const timestampMs = new Date(targetDecode.timestamp).getTime();
+        const wsjtxDecode = {
+            id: instanceId,
+            time: Math.floor((timestampMs % 86400000) / 1000), // ms since midnight UTC
+            snr: targetDecode.snr_db,
+            deltaTime: targetDecode.dt_sec,
+            deltaFrequency: targetDecode.audio_offset_hz,
+            mode: targetDecode.mode,
+            message: targetDecode.raw_text,
+            newDecode: targetDecode.is_new ?? false,
+            lowConfidence: targetDecode.low_confidence ?? false,
+            offAir: targetDecode.off_air ?? false,
+        };
+
+        console.log(`Found decode for ${targetCallsign}: SNR ${targetDecode.snr_db}dB @ ${targetDecode.audio_offset_hz}Hz`);
+
         const qsoConfig: QsoConfig = {
             instanceId,
             targetCallsign,
             myCallsign,
             myGrid,
+            initialDecode: wsjtxDecode,
         };
 
         const qso = new QsoStateMachine(qsoConfig);
@@ -398,16 +447,26 @@ export class WsjtxManager extends EventEmitter {
 
     /**
      * Get recent decodes for a channel (FSD §11.5)
+     * Returns internal decode records with routing info
      */
-    public getDecodes(channelIndex: number, sinceMs?: number): DecodeRecord[] {
+    public getDecodes(channelIndex: number, sinceMs?: number): InternalDecodeRecord[] {
         return this.stateManager.getDecodes(channelIndex, sinceMs);
     }
 
     /**
      * Get all recent decodes across all channels
+     * Returns internal decode records with routing info
      */
-    public getAllDecodes(sinceMs?: number): DecodeRecord[] {
+    public getAllDecodes(sinceMs?: number): InternalDecodeRecord[] {
         return this.stateManager.getAllDecodes(sinceMs);
+    }
+
+    /**
+     * Get decodes snapshot for MCP exposure (v7 FSD §3)
+     * Returns DecodesSnapshot with MCP-facing DecodeRecord[] (no routing fields)
+     */
+    public getDecodesSnapshot(sinceMs?: number) {
+        return this.stateManager.getDecodesSnapshot(sinceMs);
     }
 
     /**
@@ -603,6 +662,28 @@ export class WsjtxManager extends EventEmitter {
             qso.abort();
         }
         this.activeQsos.clear();
+
+        // Send graceful Close messages to all WSJT-X instances before killing them
+        console.log('Sending Close messages to WSJT-X instances...');
+        const channels = this.stateManager.getChannels();
+        for (let i = 0; i < 4; i++) {
+            const channel = channels[i];
+            if (channel && channel.connected) {
+                const instanceId = `WSJT-X - Slice-${channel.id}`;  // e.g., "WSJT-X - Slice-A"
+                const udpPort = 2237 + i;
+
+                // Create a temporary UDP sender for this instance
+                const sender = new UdpSender(udpPort);
+                sender.sendClose(instanceId);
+                sender.close();
+
+                console.log(`  Sent Close to ${instanceId} on UDP port ${udpPort}`);
+            }
+        }
+
+        // Wait 2 seconds for WSJT-X instances to gracefully close
+        console.log('Waiting for graceful shutdown...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Stop HRD CAT servers and UDP listeners (via FlexRadioManager)
         if (this.flexRadioManager) {

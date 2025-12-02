@@ -6,20 +6,34 @@
   "flex": {
     "host": "10.99.6.135",
     "catBasePort": 60000,
-    "defaultBands": [28074000, 21074000, 14074000, 7074000]
+    "defaultBands": [
+      28074000,
+      21074000,
+      14074000,
+      7074000
+    ]
   },
   "standard": {
     "rigName": "IC-7300"
   },
   "station": {
     "callsign": "HB9BLA",
-    "grid": "JN37VL"
+    "grid": "JN37VL",
+    "continent": "EU",
+    "dxcc": "HB",
+    "prefixes": ["HB9", "HB3", "HB0"]
   },
   "mcp": {
     "name": "wsjt-x-mcp",
     "version": "1.0.0"
   },
   "web": {
-    "port": 3000
+    "port": 3001
+  },
+  "dashboard": {
+    "stationLifetimeSeconds": 120,
+    "snrWeakThreshold": -15,
+    "snrStrongThreshold": 0,
+    "adifLogPath": ""
   }
 }

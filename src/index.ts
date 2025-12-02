@@ -4,12 +4,15 @@ import { discoverFlexRadio } from './flex/FlexDiscovery';
 import { WsjtxManager } from './wsjtx/WsjtxManager';
 import { WsjtxMcpServer } from './mcp/McpServer';
 import { WebServer } from './web/server';
-import { setDefaultWsjtxPath } from './wsjtx/ProcessManager';
+import { setDefaultWsjtxPath, killOrphanedJt9Processes } from './wsjtx/ProcessManager';
 
 async function main() {
     console.log('Starting WSJT-X MCP Server...');
 
     try {
+        // Clean up any orphaned jt9 processes from previous sessions
+        await killOrphanedJt9Processes();
+
         const config = loadConfig();
         console.log(`Operation Mode: ${config.mode}`);
 
@@ -76,6 +79,8 @@ async function main() {
                 await flexClient.disconnect();
             }
             await wsjtxManager.stop();
+            // Clean up any remaining jt9 processes
+            await killOrphanedJt9Processes();
             process.exit(0);
         });
 

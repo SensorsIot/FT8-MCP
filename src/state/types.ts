@@ -115,15 +115,32 @@ export interface McpConfig {
 }
 
 /**
- * Decode record with channel context (FSD §7.2)
+ * Station profile for CQ targeting (v7 FSD §7)
  */
-export interface DecodeRecord {
-    timestamp: string;              // ISO8601 UTC
+export interface StationProfile {
+    my_call: string;
+    my_continent: string;           // "EU", "NA", "SA", "AF", "AS", "OC", "AN"
+    my_dxcc: string;                // e.g. "HB9"
+    my_prefixes: string[];          // All known prefixes for this station
+    // Optional: CQ zone, ITU zone, custom regions
+}
+
+/**
+ * Internal decode record with channel routing info (v7 FSD §13.2)
+ * This is used internally by MCP and includes channel/slice details.
+ */
+export interface InternalDecodeRecord {
+    // Internal routing fields (not exposed to MCP clients)
     channel_index: number;          // 0-3
     slice_id: string;               // "A".."D"
 
+    // Core decode data
+    timestamp: string;              // ISO8601 UTC
+    band: string;                   // e.g. "20m", "40m"
+    mode: string;                   // FT8, FT4, etc.
+
     // Frequency info
-    dial_hz: number;                // From channel state
+    dial_hz: number;                // WSJT-X dial frequency
     audio_offset_hz: number;        // Delta frequency from decode
     rf_hz: number;                  // dial_hz + audio_offset_hz
 
@@ -132,17 +149,79 @@ export interface DecodeRecord {
     dt_sec: number;                 // Delta time
 
     // Parsed message
-    call: string | null;
+    call: string;                   // Non-null (filtered before creating)
     grid: string | null;
     is_cq: boolean;
     is_my_call: boolean;
     raw_text: string;
 
-    // WSJT-X decode metadata
-    mode: string;                   // FT8, FT4, etc.
-    new_decode: boolean;
-    low_confidence: boolean;
-    off_air: boolean;
+    // Enriched CQ targeting fields (computed by CQ targeting logic)
+    is_directed_cq_to_me: boolean;  // Server-side decision
+    cq_target_token: string | null; // "DX", "NA", "EU", "JA", etc.
+
+    // Optional WSJT-X flags
+    is_new?: boolean;               // WSJT-X "new" flag
+    low_confidence?: boolean;       // WSJT-X lowConfidence flag
+    off_air?: boolean;              // WSJT-X offAir flag
+}
+
+/**
+ * MCP-facing decode record (v7 FSD §2.1)
+ * This is the canonical type exposed via wsjt-x://decodes resource and events.
+ * Derived from InternalDecodeRecord by dropping channel_index/slice_id and adding id.
+ */
+export interface DecodeRecord {
+    id: string;                     // Unique within snapshot
+
+    timestamp: string;              // ISO8601 UTC
+
+    band: string;                   // e.g. "20m", "40m"
+    mode: string;                   // FT8, FT4
+
+    dial_hz: number;                // WSJT-X dial frequency
+    audio_offset_hz: number;        // Audio offset (DF) in Hz
+    rf_hz: number;                  // RF frequency (dial_hz + audio_offset_hz)
+
+    snr_db: number;                 // SNR in dB
+    dt_sec: number;                 // Timing offset in seconds
+
+    call: string;                   // Decoded primary callsign
+    grid: string | null;            // Maidenhead locator or null
+
+    is_cq: boolean;                 // True if CQ-type message
+    is_my_call: boolean;            // True if addressed to our callsign
+
+    /**
+     * True if THIS station is allowed to answer this CQ according to
+     * CQ pattern (CQ DX, CQ NA, etc.) and operator's location.
+     * Server is authoritative; client MUST NOT reimplement this logic.
+     */
+    is_directed_cq_to_me: boolean;
+
+    /**
+     * Raw CQ target token extracted from message (informational only).
+     * Examples: "DX", "NA", "EU", "JA" or null for plain CQ.
+     */
+    cq_target_token: string | null;
+
+    raw_text: string;               // Raw WSJT-X decoded message text
+
+    // Optional WSJT-X flags
+    is_new?: boolean;
+    low_confidence?: boolean;
+    off_air?: boolean;
+}
+
+/**
+ * Snapshot of all current decodes (v7 FSD §2.2)
+ * This is the canonical representation used in both:
+ * - wsjt-x://decodes resource
+ * - resources/updated event payload
+ */
+export interface DecodesSnapshot {
+    snapshot_id: string;            // Unique ID for this snapshot (e.g. UUID)
+    generated_at: string;           // ISO8601 UTC when snapshot was built
+    decodes: DecodeRecord[];        // Full decode list exposed to client
 }
 
 /**

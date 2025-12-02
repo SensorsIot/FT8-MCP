@@ -125,6 +125,28 @@ export class WebServer {
             res.json({ success, message: success ? `Stopped instance: ${name}` : `Instance not found: ${name}` });
         });
 
+        // API: Get slice states (decoded stations)
+        this.app.get('/api/slices', (req, res) => {
+            const slices = this.wsjtxManager.getSliceStates();
+            res.json(slices);
+        });
+
+        // API: Execute QSO
+        this.app.post('/api/qso/execute', (req, res) => {
+            try {
+                const { instanceId, targetCallsign, myCallsign, myGrid } = req.body;
+                this.wsjtxManager.executeQso(instanceId, targetCallsign, myCallsign, myGrid);
+                res.json({
+                    success: true,
+                    message: `Started QSO with ${targetCallsign} on ${instanceId}`,
+                    instanceId,
+                    targetCallsign
+                });
+            } catch (error) {
+                res.status(400).json({ success: false, error: String(error) });
+            }
+        });
+
         // Handle React routing, return all requests to React app
         this.app.get('/{*splat}', (req, res) => {
             const frontendPath = path.join(__dirname, '../../frontend/dist');

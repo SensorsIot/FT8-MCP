@@ -9,6 +9,46 @@ const HZ_PER_BIN = 1.4648;
 // Target frequency range for Wide Graph (0-2500 Hz)
 const TARGET_FREQ_RANGE = 2500;
 
+/**
+ * Detect primary screen dimensions (Windows, no PowerShell)
+ * Uses WMIC; falls back to 2560x1440 if detection fails
+ */
+export async function detectScreenDimensions(
+    fallback: ScreenDimensions = { width: 1920, height: 1080 }
+): Promise<ScreenDimensions> {
+    try {
+        const { stdout } = await execAsync(
+            'wmic path Win32_VideoController get CurrentHorizontalResolution,CurrentVerticalResolution /value',
+            { windowsHide: true }
+        );
+        const lines = stdout
+            .split(/\r?\n/)
+            .map(l => l.trim())
+            .filter(Boolean);
+
+        let width: number | null = null;
+        let height: number | null = null;
+
+        for (const line of lines) {
+            if (line.startsWith('CurrentHorizontalResolution=')) {
+                width = Number(line.split('=')[1]);
+            } else if (line.startsWith('CurrentVerticalResolution=')) {
+                height = Number(line.split('=')[1]);
+            }
+        }
+
+        if (width && height && Number.isFinite(width) && Number.isFinite(height)) {
+            return { width, height };
+        }
+        console.warn(
+            `detectScreenDimensions: unexpected output "${stdout.trim()}", using fallback ${fallback.width}x${fallback.height}`
+        );
+    } catch (error) {
+        console.warn(`detectScreenDimensions: failed to query screen size, using fallback ${fallback.width}x${fallback.height}`, error);
+    }
+    return fallback;
+}
+
 export interface WindowLayout {
     mainWindow: { x: number; y: number; width: number; height: number };
     wideGraph: { x: number; y: number; width: number; height: number };
@@ -20,6 +60,11 @@ export interface WindowConfig {
     screenWidth?: number;       // Full screen width (default 2560)
     screenHeight?: number;      // Full screen height (default 1440)
     taskbarHeight?: number;     // Height reserved for taskbar (default 48)
+}
+
+export interface ScreenDimensions {
+    width: number;
+    height: number;
 }
 
 /**
@@ -65,8 +110,8 @@ export function calculateLayout(config: WindowConfig): WindowLayout {
     // Calculate BinsPerPixel to show TARGET_FREQ_RANGE (2500 Hz) in the window width
     // Hz per pixel needed = targetFreq / width
     // BinsPerPixel = hzPerPixel / HZ_PER_BIN
-    const hzPerPixel = TARGET_FREQ_RANGE / windowWidth;
-    const binsPerPixel = Math.max(1, Math.min(10, Math.round(hzPerPixel / HZ_PER_BIN)));
+    // Fixed to 3 per user request
+    const binsPerPixel = 3;
 
     return {
         // WideGraph (waterfall) on TOP of quadrant

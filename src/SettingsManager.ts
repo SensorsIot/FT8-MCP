@@ -25,6 +25,9 @@ export const ConfigSchema = z.object({
     station: z.object({
         callsign: z.string().default(''),
         grid: z.string().default(''),
+        continent: z.string().default('NA'),        // "EU", "NA", "SA", "AF", "AS", "OC", "AN"
+        dxcc: z.string().default(''),               // e.g. "HB9", "W", "K"
+        prefixes: z.array(z.string()).default([]),  // All known prefixes for this station
     }),
     // Standard mode parameters
     standard: z.object({

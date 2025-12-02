@@ -92,20 +92,9 @@ export class WsjtxUdpListener extends EventEmitter {
             return { value: '', newOffset: offset };
         }
 
-        // Qt QString in QDataStream uses UTF-16BE encoding
-        // Note: length is the byte count, not character count
-
-        // Handle odd length (shouldn't happen but be safe)
-        const byteLen = length % 2 === 0 ? length : length - 1;
-        if (byteLen === 0) {
-            return { value: '', newOffset: offset + length };
-        }
-
-        // Copy the slice to a new buffer and swap from UTF-16BE to UTF-16LE
-        const slice = Buffer.from(buffer.subarray(offset, offset + byteLen));
-        slice.swap16();  // In-place byte swap for 16-bit values
-
-        const value = slice.toString('utf16le');
+        // WSJT-X implementation uses Latin-1/ASCII encoding for QString, not UTF-16BE
+        // despite what Qt documentation says about QDataStream
+        const value = buffer.toString('latin1', offset, offset + length);
         return { value, newOffset: offset + length };
     }
 

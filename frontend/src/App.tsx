@@ -22,14 +22,14 @@ const DEFAULT_CONFIG: DashboardConfig = {
 const getApiBase = () => {
   if (window.location.port === '5173' || window.location.port === '5174') {
     // Development mode - Vite dev server
-    return `http://${window.location.hostname}:3000`;
+    return `http://${window.location.hostname}:3001`;
   }
   // Production mode - served from the same server
   return '';
 };
 
 const API_BASE = getApiBase();
-const WS_URL = `ws://${window.location.hostname}:3000`;
+const WS_URL = `ws://${window.location.hostname}:3001`;
 
 function App() {
   const [slices, setSlices] = useState<SliceState[]>([]);

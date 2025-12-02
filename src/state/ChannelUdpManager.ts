@@ -14,11 +14,13 @@ import dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { StateManager } from './StateManager';
 import {
-    DecodeRecord,
+    InternalDecodeRecord,
     QsoRecord,
+    StationProfile,
     frequencyToBand,
     indexToSliceLetter,
 } from './types';
+import { enrichWithCqTargeting } from '../utils/CqTargeting';
 
 // WSJT-X UDP Message Types
 enum WsjtxMessageType {
@@ -57,11 +59,13 @@ export class ChannelUdpManager extends EventEmitter {
     private stateManager: StateManager;
     private udpListeners: Map<number, ChannelListener> = new Map();
     private myCallsign: string;
+    private stationProfile: StationProfile;
 
-    constructor(stateManager: StateManager, myCallsign: string) {
+    constructor(stateManager: StateManager, myCallsign: string, stationProfile: StationProfile) {
         super();
         this.stateManager = stateManager;
         this.myCallsign = myCallsign.toUpperCase();
+        this.stationProfile = stationProfile;
     }
 
     /**
@@ -314,14 +318,34 @@ export class ChannelUdpManager extends EventEmitter {
             // Parse callsign and grid from message
             const { call, grid, isCq } = this.parseDecodeMessage(message);
 
+            // Skip decodes with no valid callsign
+            if (!call) {
+                return;
+            }
+
             // Check if message is for us
             const isMyCall = this.isMessageForMe(message);
 
-            // Create decode record
-            const decode: DecodeRecord = {
-                timestamp: new Date().toISOString(),
+            // Derive band from dial frequency
+            const band = frequencyToBand(dialHz);
+
+            // Enrich with CQ targeting logic
+            const { cq_target_token, is_directed_cq_to_me } = enrichWithCqTargeting(
+                message,
+                isCq,
+                this.stationProfile
+            );
+
+            // Create internal decode record
+            const decode: InternalDecodeRecord = {
+                // Internal routing fields
                 channel_index: channelIndex,
                 slice_id: indexToSliceLetter(channelIndex),
+
+                // Core decode data
+                timestamp: new Date().toISOString(),
+                band,
+                mode,
                 dial_hz: dialHz,
                 audio_offset_hz: deltaFrequency,
                 rf_hz: dialHz + deltaFrequency,
@@ -332,11 +356,19 @@ export class ChannelUdpManager extends EventEmitter {
                 is_cq: isCq,
                 is_my_call: isMyCall,
                 raw_text: message,
-                mode,
-                new_decode: newDecode,
+
+                // Enriched CQ targeting fields
+                is_directed_cq_to_me,
+                cq_target_token,
+
+                // Optional WSJT-X flags
+                is_new: newDecode,
                 low_confidence: lowConfidence,
                 off_air: offAir,
             };
+
+            // Log decode for debugging
+            console.log(`[Channel ${indexToSliceLetter(channelIndex)}] Decode: ${message} (SNR: ${snr}dB, Call: ${call}, Band: ${band})`);
 
             // Add to state manager
             this.stateManager.addDecode(decode);
@@ -447,17 +479,9 @@ export class ChannelUdpManager extends EventEmitter {
             return { value: '', newOffset: offset };
         }
 
-        // Qt QString in QDataStream uses UTF-16BE encoding
-        const byteLen = length % 2 === 0 ? length : length - 1;
-        if (byteLen === 0) {
-            return { value: '', newOffset: offset + length };
-        }
-
-        // Copy and swap from UTF-16BE to UTF-16LE
-        const slice = Buffer.from(buffer.subarray(offset, offset + byteLen));
-        slice.swap16();
-
-        const value = slice.toString('utf16le');
+        // WSJT-X implementation uses Latin-1/ASCII encoding for QString, not UTF-16BE
+        // despite what Qt documentation says about QDataStream
+        const value = buffer.toString('latin1', offset, offset + length);
         return { value, newOffset: offset + length };
     }
 

@@ -1,6 +1,60 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, exec } from 'child_process';
 import { EventEmitter } from 'events';
 import path from 'path';
+
+/**
+ * Kill all orphaned jt9.exe processes
+ * jt9 is the WSJT-X decoder subprocess that can get orphaned when WSJT-X doesn't shut down cleanly
+ */
+export async function killOrphanedJt9Processes(): Promise<number> {
+    return new Promise((resolve) => {
+        if (process.platform === 'win32') {
+            // Windows: Use tasklist to find jt9 processes and taskkill to kill them
+            exec('tasklist /FI "IMAGENAME eq jt9.exe" /FO CSV /NH', (err, stdout) => {
+                if (err || !stdout.trim() || stdout.includes('No tasks')) {
+                    resolve(0);
+                    return;
+                }
+
+                // Count jt9 processes
+                const lines = stdout.trim().split('\n').filter(line => line.includes('jt9.exe'));
+                const count = lines.length;
+
+                if (count > 0) {
+                    console.log(`[ProcessManager] Found ${count} orphaned jt9 process(es), killing...`);
+                    exec('taskkill /F /IM jt9.exe', (killErr) => {
+                        if (killErr) {
+                            console.warn(`[ProcessManager] Warning: Could not kill jt9 processes: ${killErr.message}`);
+                        } else {
+                            console.log(`[ProcessManager] Killed ${count} orphaned jt9 process(es)`);
+                        }
+                        resolve(count);
+                    });
+                } else {
+                    resolve(0);
+                }
+            });
+        } else {
+            // Linux/Mac: Use pkill
+            exec('pgrep -c jt9', (err, stdout) => {
+                const count = parseInt(stdout.trim()) || 0;
+                if (count > 0) {
+                    console.log(`[ProcessManager] Found ${count} orphaned jt9 process(es), killing...`);
+                    exec('pkill -9 jt9', (killErr) => {
+                        if (killErr) {
+                            console.warn(`[ProcessManager] Warning: Could not kill jt9 processes: ${killErr.message}`);
+                        } else {
+                            console.log(`[ProcessManager] Killed ${count} orphaned jt9 process(es)`);
+                        }
+                        resolve(count);
+                    });
+                } else {
+                    resolve(0);
+                }
+            });
+        }
+    });
+}
 
 export interface WsjtxInstanceConfig {
     name: string;

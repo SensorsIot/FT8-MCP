@@ -33,8 +33,12 @@ export class Vita49Client extends EventEmitter {
                 this.connected = true;
                 // Subscribe to slice status updates
                 this.sendCommand('sub slice all');
+                // Subscribe to DAX audio updates
+                this.sendCommand('sub dax all');
                 // Request current slice list
                 this.sendCommand('slice list');
+                // Request DAX audio client list
+                this.sendCommand('dax audio list');
                 this.emit('connected');
                 resolve();
             });
@@ -65,13 +69,22 @@ export class Vita49Client extends EventEmitter {
         for (const line of lines) {
             if (!line.trim()) continue;
 
+            // Log all FlexRadio responses for debugging DAX issues
+            if (line.includes('dax') || line.includes('audio') || line.includes('stream')) {
+                console.log(`[FlexRadio DAX] ${line}`);
+            }
+
             // Parse FlexRadio responses
             // Format: S<handle>|<message> or status messages
+            // Also handle R (response) messages
             if (line.startsWith('S')) {
                 const parts = line.substring(1).split('|');
                 if (parts.length >= 2) {
                     this.handleMessage(parts[1].trim());
                 }
+            } else if (line.startsWith('R')) {
+                // Response to a command - log for debugging
+                console.log(`[FlexRadio Response] ${line}`);
             }
         }
     }
@@ -202,6 +215,45 @@ export class Vita49Client extends EventEmitter {
         // FlexRadio API: xmit <0|1>
         // Note: FlexRadio has a single transmitter, so this affects the active TX slice
         this.sendCommand(`xmit ${tx ? '1' : '0'}`);
+    }
+
+    /**
+     * Set the DAX channel for a slice
+     * @param sliceIndex Slice index (0, 1, 2, ...)
+     * @param daxChannel DAX channel (1-8), 0 to disable
+     */
+    public setSliceDax(sliceIndex: number, daxChannel: number): void {
+        // FlexRadio API: slice set <index> dax=<channel>
+        console.log(`Setting DAX channel ${daxChannel} for slice ${sliceIndex}`);
+        this.sendCommand(`slice set ${sliceIndex} dax=${daxChannel}`);
+    }
+
+    /**
+     * Create a DAX RX audio stream for a channel
+     * This creates the audio stream that will be sent to the DAX audio device
+     * @param daxChannel DAX channel (1-8)
+     */
+    public createDaxRxAudioStream(daxChannel: number): void {
+        // FlexRadio API: stream create type=dax_rx dax_channel=<channel>
+        console.log(`Creating DAX RX audio stream for channel ${daxChannel}`);
+        this.sendCommand(`stream create type=dax_rx dax_channel=${daxChannel}`);
+    }
+
+    /**
+     * Create a DAX TX audio stream for transmitting
+     * @param daxChannel DAX channel (typically 1 for TX)
+     */
+    public createDaxTxAudioStream(daxChannel: number = 1): void {
+        // FlexRadio API: stream create type=dax_tx
+        console.log(`Creating DAX TX audio stream`);
+        this.sendCommand(`stream create type=dax_tx`);
+    }
+
+    /**
+     * Request the current DAX audio stream list
+     */
+    public listDaxStreams(): void {
+        this.sendCommand('stream list');
     }
 
     public disconnect(): void {
