@@ -314,11 +314,25 @@ export class WsjtxMcpServer {
         // Set this channel as TX
         this.wsjtxManager.setTxChannel(channelIndex);
 
-        // Send a WSJT-X Reply message to answer this station
-        // This requires access to UdpSender - we'll need to add a method to WsjtxManager
-        // For now, we'll return success indicating the action was taken
+        // Send WSJT-X Reply command to answer this station
+        // Extract time in milliseconds since midnight UTC from decode timestamp
+        const decodeTime = new Date(targetDecode.timestamp);
+        const midnightUtc = new Date(decodeTime);
+        midnightUtc.setUTCHours(0, 0, 0, 0);
+        const timeMs = decodeTime.getTime() - midnightUtc.getTime();
 
-        console.log(`[MCP] Answering ${targetDecode.call} on ${channel.band} (${channel.freq_hz} Hz)`);
+        // Send Reply message with Shift modifier (0x02) to enable TX
+        this.wsjtxManager.replyToStation(
+            channel.instanceName,
+            timeMs,
+            targetDecode.snr_db,
+            targetDecode.dt_sec,
+            targetDecode.audio_offset_hz,
+            force_mode || channel.wsjtx_mode || "FT8",
+            targetDecode.raw_text
+        );
+
+        console.log(`[MCP] Sent Reply to ${targetDecode.call} on ${channel.band} (${channel.freq_hz} Hz)`);
 
         return {
             status: `Reply sent to ${targetDecode.call}, QSO in progress`,
