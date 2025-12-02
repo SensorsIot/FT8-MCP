@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Config } from '../SettingsManager';
 import { WsjtxUdpListener } from './UdpListener';
 import { UdpSender } from './UdpSender';
+import { UdpRebroadcaster } from './UdpRebroadcaster';
 import { WsjtxDecode, WsjtxStatus, SliceState } from './types';
 import { ProcessManager, WsjtxInstanceConfig } from './ProcessManager';
 import { QsoStateMachine, QsoConfig } from './QsoStateMachine';
@@ -12,8 +13,9 @@ import {
     McpState,
     InternalDecodeRecord,
     StationProfile,
+    QsoRecord,
 } from '../state';
-import { LogbookManager, QsoRecord } from '../logbook';
+import { LogbookManager } from '../logbook';
 import { DashboardManager } from '../dashboard';
 
 export class WsjtxManager extends EventEmitter {
@@ -30,6 +32,7 @@ export class WsjtxManager extends EventEmitter {
     private stateManager: StateManager;
     private channelUdpManager: ChannelUdpManager;
     private logbookManager: LogbookManager;
+    private udpRebroadcaster: UdpRebroadcaster;
 
     constructor(config: Config) {
         super();
@@ -64,6 +67,14 @@ export class WsjtxManager extends EventEmitter {
             enableHrdServer: config.logbook?.enableHrdServer ?? false,
             hrdPort: config.logbook?.hrdPort ?? 7800,
             logbookPath: config.logbook?.path,
+        });
+
+        // Initialize UDP Rebroadcaster for external loggers (Log4OM, etc.)
+        this.udpRebroadcaster = new UdpRebroadcaster({
+            enabled: config.logbook?.udpRebroadcast?.enabled ?? false,
+            port: config.logbook?.udpRebroadcast?.port ?? 2241,
+            instanceId: config.logbook?.udpRebroadcast?.instanceId ?? 'WSJT-X-MCP',
+            host: config.logbook?.udpRebroadcast?.host ?? '127.0.0.1',
         });
 
         // Legacy components (still used in STANDARD mode and for backward compatibility)
@@ -157,6 +168,10 @@ export class WsjtxManager extends EventEmitter {
         this.channelUdpManager.on('qso-logged', (qso: QsoRecord) => {
             // Write to ADIF logbook and update WorkedIndex
             this.logbookManager.logQso(qso);
+
+            // Rebroadcast to external loggers (Log4OM, etc.)
+            this.udpRebroadcaster.rebroadcastQsoLogged(qso);
+
             this.emit('qso-logged', qso);
         });
 
@@ -222,6 +237,9 @@ export class WsjtxManager extends EventEmitter {
             console.error('[Logbook] Failed to initialize:', error);
             // Continue anyway - QSOs won't be logged to file but everything else works
         }
+
+        // Start UDP rebroadcaster for external loggers (Log4OM, etc.)
+        this.udpRebroadcaster.start();
 
         if (this.config.mode === 'STANDARD') {
             console.log('Starting WSJT-X Manager in STANDARD mode.');
@@ -717,6 +735,7 @@ export class WsjtxManager extends EventEmitter {
         this.channelUdpManager.stopAll();
         this.stateManager.stop();
         this.logbookManager.stop();
+        this.udpRebroadcaster.stop();
 
         // Stop legacy components
         this.dashboardManager.stop();

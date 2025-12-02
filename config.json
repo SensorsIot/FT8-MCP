@@ -35,5 +35,15 @@
     "snrWeakThreshold": -15,
     "snrStrongThreshold": 0,
     "adifLogPath": ""
+  },
+  "logbook": {
+    "enableHrdServer": true,
+    "hrdPort": 7800,
+    "udpRebroadcast": {
+      "enabled": true,
+      "port": 2241,
+      "instanceId": "WSJT-X-MCP",
+      "host": "127.0.0.1"
+    }
   }
 }

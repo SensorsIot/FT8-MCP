@@ -61,6 +61,12 @@ export const ConfigSchema = z.object({
         path: z.string().optional(),                     // Path to ADIF logbook (default: %APPDATA%/wsjt-x-mcp/mcp_logbook.adi)
         enableHrdServer: z.boolean().default(false),     // Enable HRD server for external loggers (Log4OM, N1MM)
         hrdPort: z.number().default(7800),               // HRD server port for external loggers
+        udpRebroadcast: z.object({                       // UDP rebroadcast for external loggers (Log4OM)
+            enabled: z.boolean().default(false),         // Enable UDP rebroadcast
+            port: z.number().default(2241),              // Rebroadcast port (Log4OM listens here)
+            instanceId: z.string().default('WSJT-X-MCP'), // Unified instance ID
+            host: z.string().default('127.0.0.1'),       // Target host
+        }).optional(),
     }).optional(),
     // Internal parameters (not user-configurable)
     mcp: z.object({
