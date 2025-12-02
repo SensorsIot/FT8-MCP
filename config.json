@@ -41,7 +41,7 @@
     "hrdPort": 7800,
     "udpRebroadcast": {
       "enabled": true,
-      "port": 2241,
+      "port": 2236,
       "instanceId": "WSJT-X-MCP",
       "host": "127.0.0.1"
     }

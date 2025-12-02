@@ -1,21 +1,16 @@
 /**
- * UdpRebroadcaster - Consolidates WSJT-X UDP messages from multiple instances
- * and rebroadcasts them as a single unified instance for external loggers (Log4OM, etc.)
+ * UdpRebroadcaster - Consolidates QSO records from multiple WSJT-X instances
+ * and rebroadcasts them in ADIF format for external loggers (Log4OM, etc.)
  *
  * Architecture:
- * - Listens to events from ChannelUdpManager (QSO Logged, Status, Decode)
- * - Rewrites messages to use a single instance ID
+ * - Listens to QSO Logged events from LogbookManager
+ * - Converts QsoRecord to ADIF text format
  * - Sends to rebroadcast port (default: 2241)
  */
 
 import dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { QsoRecord } from '../state/types';
-
-// WSJT-X UDP Message Types
-const WSJT_MAGIC = 0xadbccbda;
-const WSJT_SCHEMA = 2;
-const WSJT_MSG_QSO_LOGGED = 5;
 
 export interface UdpRebroadcasterConfig {
     enabled: boolean;           // Enable rebroadcasting
@@ -43,7 +38,7 @@ export class UdpRebroadcaster extends EventEmitter {
         }
 
         this.socket = dgram.createSocket('udp4');
-        console.log(`[UdpRebroadcaster] Started - rebroadcasting to ${this.config.host}:${this.config.port} as "${this.config.instanceId}"`);
+        console.log(`[UdpRebroadcaster] Started - rebroadcasting ADIF to ${this.config.host}:${this.config.port}`);
     }
 
     public stop(): void {
@@ -55,7 +50,7 @@ export class UdpRebroadcaster extends EventEmitter {
     }
 
     /**
-     * Rebroadcast a QSO Logged message
+     * Rebroadcast a QSO Logged message in ADIF format
      * Called when any channel logs a QSO
      */
     public rebroadcastQsoLogged(qso: QsoRecord): void {
@@ -64,141 +59,116 @@ export class UdpRebroadcaster extends EventEmitter {
         }
 
         try {
-            const message = this.encodeQsoLoggedMessage(qso);
-            this.socket.send(message, this.config.port, this.config.host, (err) => {
+            const adifMessage = this.encodeAdifMessage(qso);
+            const buffer = Buffer.from(adifMessage, 'utf8');
+
+            this.socket.send(buffer, this.config.port, this.config.host, (err) => {
                 if (err) {
-                    console.error('[UdpRebroadcaster] Error sending QSO Logged:', err);
+                    console.error('[UdpRebroadcaster] Error sending ADIF QSO:', err);
                 } else {
-                    console.log(`[UdpRebroadcaster] Sent QSO Logged: ${qso.call} on ${qso.band} ${qso.mode}`);
+                    console.log(`[UdpRebroadcaster] Sent ADIF QSO: ${qso.call} on ${qso.band} ${qso.mode}`);
                 }
             });
         } catch (error) {
-            console.error('[UdpRebroadcaster] Error encoding QSO Logged message:', error);
+            console.error('[UdpRebroadcaster] Error encoding ADIF message:', error);
         }
     }
 
     /**
-     * Encode a QSO Logged message in WSJT-X UDP format
-     * Message Type 5 format:
-     * [Magic:4][Schema:4][Type:4][ID:QString]
-     * [TimeOff:QDateTime][DxCall:QString][DxGrid:QString][TxFreq:quint64]
-     * [Mode:QString][ReportSent:QString][ReportRecv:QString][TxPower:QString]
-     * [Comments:QString][Name:QString][TimeOn:QDateTime]
+     * Encode a QSO record to ADIF format
+     * Format: <FIELDNAME:LENGTH>VALUE ... <EOR>
+     *
+     * Example:
+     * <CALL:6>DL1ABC <GRIDSQUARE:4>JO50 <BAND:3>20m <MODE:3>FT8
+     * <QSO_DATE:8>20251202 <TIME_ON:6>152000 <TIME_OFF:6>152130
+     * <RST_SENT:3>-08 <RST_RCVD:3>-12 <TX_PWR:2>50 <FREQ:9>14.074000 <EOR>
      */
-    private encodeQsoLoggedMessage(qso: QsoRecord): Buffer {
-        const buffers: Buffer[] = [];
+    private encodeAdifMessage(qso: QsoRecord): string {
+        const fields: string[] = [];
 
-        // Header
-        const header = Buffer.alloc(12);
-        header.writeUInt32BE(WSJT_MAGIC, 0);      // Magic
-        header.writeUInt32BE(WSJT_SCHEMA, 4);     // Schema
-        header.writeUInt32BE(WSJT_MSG_QSO_LOGGED, 8); // Message Type
-        buffers.push(header);
+        // Required fields
+        if (qso.call) {
+            fields.push(this.adifField('CALL', qso.call));
+        }
 
-        // Instance ID (QString)
-        buffers.push(this.encodeQString(this.config.instanceId));
+        if (qso.mode) {
+            fields.push(this.adifField('MODE', qso.mode));
+        }
 
-        // Time Off (QDateTime)
-        buffers.push(this.encodeQDateTime(qso.timestamp_end));
+        if (qso.band) {
+            fields.push(this.adifField('BAND', qso.band));
+        }
 
-        // DX Call (QString)
-        buffers.push(this.encodeQString(qso.call));
+        // Frequency in MHz
+        if (qso.freq_hz) {
+            const freqMhz = (qso.freq_hz / 1000000).toFixed(6);
+            fields.push(this.adifField('FREQ', freqMhz));
+        }
 
-        // DX Grid (QString)
-        buffers.push(this.encodeQString(qso.grid || ''));
+        // Timestamps
+        if (qso.timestamp_start) {
+            const startDate = new Date(qso.timestamp_start);
+            fields.push(this.adifField('QSO_DATE', this.formatAdifDate(startDate)));
+            fields.push(this.adifField('TIME_ON', this.formatAdifTime(startDate)));
+        }
 
-        // TX Frequency (quint64)
-        const freqBuf = Buffer.alloc(8);
-        freqBuf.writeBigUInt64BE(BigInt(qso.freq_hz), 0);
-        buffers.push(freqBuf);
+        if (qso.timestamp_end) {
+            const endDate = new Date(qso.timestamp_end);
+            fields.push(this.adifField('TIME_OFF', this.formatAdifTime(endDate)));
+        }
 
-        // Mode (QString)
-        buffers.push(this.encodeQString(qso.mode));
+        // Optional fields
+        if (qso.grid) {
+            fields.push(this.adifField('GRIDSQUARE', qso.grid));
+        }
 
-        // Report Sent (QString)
-        buffers.push(this.encodeQString(qso.rst_sent || ''));
+        if (qso.rst_sent) {
+            fields.push(this.adifField('RST_SENT', qso.rst_sent));
+        }
 
-        // Report Received (QString)
-        buffers.push(this.encodeQString(qso.rst_recv || ''));
+        if (qso.rst_recv) {
+            fields.push(this.adifField('RST_RCVD', qso.rst_recv));
+        }
 
-        // TX Power (QString)
-        buffers.push(this.encodeQString(qso.tx_power_w ? qso.tx_power_w.toString() : ''));
+        if (qso.tx_power_w) {
+            fields.push(this.adifField('TX_PWR', qso.tx_power_w.toString()));
+        }
 
-        // Comments (QString)
-        buffers.push(this.encodeQString(qso.notes || ''));
+        if (qso.notes) {
+            fields.push(this.adifField('COMMENT', qso.notes));
+        }
 
-        // Name (QString) - rarely used
-        buffers.push(this.encodeQString(''));
+        // End of record
+        fields.push('<EOR>');
 
-        // Time On (QDateTime)
-        buffers.push(this.encodeQDateTime(qso.timestamp_start));
-
-        return Buffer.concat(buffers);
+        return fields.join(' ');
     }
 
     /**
-     * Encode a QString for WSJT-X UDP
-     * Format: length (quint32) + Latin-1 string data
-     * 0xFFFFFFFF = null, 0 = empty
+     * Format an ADIF field: <FIELDNAME:LENGTH>VALUE
      */
-    private encodeQString(str: string): Buffer {
-        if (!str || str.length === 0) {
-            const buf = Buffer.alloc(4);
-            buf.writeUInt32BE(0xFFFFFFFF, 0);
-            return buf;
-        }
-
-        // Convert to Latin-1 (single-byte encoding)
-        const strBuf = Buffer.from(str, 'latin1');
-        const buf = Buffer.alloc(4 + strBuf.length);
-        buf.writeUInt32BE(strBuf.length, 0);
-        strBuf.copy(buf, 4);
-        return buf;
+    private adifField(fieldName: string, value: string): string {
+        const length = Buffer.byteLength(value, 'utf8');
+        return `<${fieldName}:${length}>${value}`;
     }
 
     /**
-     * Encode a QDateTime for WSJT-X UDP
-     * Format: Julian day (qint64) + milliseconds since midnight (quint32) + time spec (quint8)
+     * Format date as YYYYMMDD for ADIF
      */
-    private encodeQDateTime(isoTimestamp: string): Buffer {
-        const buf = Buffer.alloc(13);
+    private formatAdifDate(date: Date): string {
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        return `${year}${month}${day}`;
+    }
 
-        if (!isoTimestamp) {
-            // Null QDateTime
-            buf.writeBigInt64BE(BigInt(0), 0);
-            buf.writeUInt32BE(0, 8);
-            buf.writeUInt8(0, 12);
-            return buf;
-        }
-
-        try {
-            const date = new Date(isoTimestamp);
-
-            // Calculate Julian day number
-            // JavaScript epoch (Jan 1, 1970) = Julian day 2440588
-            const unixMs = date.getTime();
-            const unixDays = Math.floor(unixMs / 86400000);
-            const julianDay = unixDays + 2440588;
-
-            // Calculate milliseconds since midnight UTC
-            const utcDate = new Date(date.toISOString());
-            const midnightUtc = new Date(utcDate);
-            midnightUtc.setUTCHours(0, 0, 0, 0);
-            const msOfDay = utcDate.getTime() - midnightUtc.getTime();
-
-            // Write to buffer
-            buf.writeBigInt64BE(BigInt(julianDay), 0);  // Julian day
-            buf.writeUInt32BE(msOfDay, 8);              // Milliseconds since midnight
-            buf.writeUInt8(1, 12);                       // Time spec (1 = UTC)
-
-            return buf;
-        } catch (error) {
-            console.error('[UdpRebroadcaster] Error encoding QDateTime:', error);
-            // Return null QDateTime on error
-            buf.writeBigInt64BE(BigInt(0), 0);
-            buf.writeUInt32BE(0, 8);
-            buf.writeUInt8(0, 12);
-            return buf;
-        }
+    /**
+     * Format time as HHMMSS for ADIF
+     */
+    private formatAdifTime(date: Date): string {
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+        return `${hours}${minutes}${seconds}`;
     }
 }
