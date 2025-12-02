@@ -127,6 +127,7 @@ export class UdpSender {
 
         const packet = Buffer.concat([header, body.slice(0, offset)]);
         this.send(packet);
+        console.log(`[UDP] Sent FreeText to ${id}: "${text}" (send=${send}) on port ${this.targetPort}`);
     }
 
     /**
@@ -186,6 +187,12 @@ export class UdpSender {
 
         const packet = Buffer.concat([header, body.slice(0, offset)]);
         this.send(packet);
+
+        const optionsSummary = Object.entries(options)
+            .filter(([_, v]) => v !== undefined && v !== '')
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ');
+        console.log(`[UDP] Sent Configure to ${id}: ${optionsSummary} on port ${this.targetPort}`);
     }
 
     /**

@@ -195,7 +195,7 @@ export class FlexRadioManager extends EventEmitter {
         const catPort = this.getCatPort(sliceIndex);
         const udpPort = 2237 + sliceIndex;
 
-        const instanceName = `Slice-${sliceLetter}`;
+        const instanceName = `WSJT-X - Slice-${sliceLetter}`;
         const freqMHz = (slice.frequency / 1e6).toFixed(3);
 
         console.log(`\n=== Auto-launching WSJT-X for slice ${slice.id} ===`);

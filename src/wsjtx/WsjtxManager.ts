@@ -521,6 +521,23 @@ export class WsjtxManager extends EventEmitter {
     // === WSJT-X UDP Control Methods ===
 
     /**
+     * Get UDP port for an instance based on its name
+     * In FLEX mode: "WSJT-X - Slice-A" -> port 2237, "WSJT-X - Slice-B" -> port 2238, etc.
+     * In STANDARD mode: always port 2237
+     */
+    private getUdpPortForInstance(instanceId: string): number {
+        if (this.config.mode === 'FLEX') {
+            const match = instanceId.match(/Slice-([A-D])/);
+            if (match) {
+                const sliceLetter = match[1];
+                const sliceIndex = sliceLetter.charCodeAt(0) - 65; // 'A' = 0, 'B' = 1, etc.
+                return 2237 + sliceIndex;
+            }
+        }
+        return 2237; // Default port for STANDARD mode
+    }
+
+    /**
      * Configure WSJT-X instance mode and settings
      * Note: This cannot change dial frequency - only CAT/SmartSDR can do that
      */
@@ -538,7 +555,10 @@ export class WsjtxManager extends EventEmitter {
             generateMessages?: boolean;
         }
     ): void {
-        this.udpSender.sendConfigure(instanceId, options);
+        const port = this.getUdpPortForInstance(instanceId);
+        const sender = new UdpSender(port);
+        sender.sendConfigure(instanceId, options);
+        sender.close();
     }
 
     /**
@@ -588,7 +608,10 @@ export class WsjtxManager extends EventEmitter {
      * Set free text message in WSJT-X
      */
     public setFreeText(instanceId: string, text: string, send: boolean = false): void {
-        this.udpSender.sendFreeText(instanceId, text, send);
+        const port = this.getUdpPortForInstance(instanceId);
+        const sender = new UdpSender(port);
+        sender.sendFreeText(instanceId, text, send);
+        sender.close();
     }
 
     /**

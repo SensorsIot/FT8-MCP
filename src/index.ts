@@ -5,6 +5,14 @@ import { WsjtxManager } from './wsjtx/WsjtxManager';
 import { WsjtxMcpServer } from './mcp/McpServer';
 import { WebServer } from './web/server';
 import { setDefaultWsjtxPath, killOrphanedJt9Processes } from './wsjtx/ProcessManager';
+import { logger } from './utils/logger';
+
+// Redirect console.log to stderr to avoid breaking stdio MCP transport
+// When using MCP Inspector, only JSON-RPC messages should go to stdout
+const originalLog = console.log;
+console.log = (...args: any[]) => {
+    logger.log(...args);
+};
 
 async function main() {
     console.log('Starting WSJT-X MCP Server...');
@@ -81,6 +89,7 @@ async function main() {
             await wsjtxManager.stop();
             // Clean up any remaining jt9 processes
             await killOrphanedJt9Processes();
+            logger.close();
             process.exit(0);
         });
 

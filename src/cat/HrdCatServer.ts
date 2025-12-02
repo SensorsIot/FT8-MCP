@@ -299,7 +299,7 @@ export class HrdCatServer extends EventEmitter {
 
         if (lowerCmd.startsWith('set button-select ')) {
             // Parse button command
-            const parts = command.substring(18).trim().split(/\s+/);
+            const parts = cleanedCommand.substring(18).trim().split(/\s+/);
             const buttonName = parts[0]?.replace(/[{}]/g, '').toLowerCase();
             const state = parts[1] === '1';
 

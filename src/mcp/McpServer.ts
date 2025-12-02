@@ -186,6 +186,8 @@ export class WsjtxMcpServer {
         freq_hz: number;
         mode: string;
     }> {
+        console.log(`[MCP] call_cq tool invoked: band=${band}, freq_hz=${freq_hz}, mode=${mode}`);
+
         const state = this.wsjtxManager.getMcpState();
 
         // Find an available channel or use the TX channel
@@ -198,25 +200,50 @@ export class WsjtxMcpServer {
             );
             if (channelOnBand) {
                 targetChannelIndex = channelOnBand.index;
+                console.log(`[MCP] Found channel ${channelOnBand.id} for band ${band}`);
+            } else {
+                console.log(`[MCP] No connected channel found for band ${band}, using default channel ${targetChannelIndex}`);
             }
         }
 
         const targetChannel = state.channels[targetChannelIndex];
 
+        if (!targetChannel.connected) {
+            const errorMsg = `Channel ${targetChannel.id} is not connected`;
+            console.error(`[MCP] ${errorMsg}`);
+            throw new Error(errorMsg);
+        }
+
         // Set as TX channel
         this.wsjtxManager.setTxChannel(targetChannelIndex);
+        console.log(`[MCP] Set TX channel to ${targetChannel.id}`);
 
         // If freq_hz is specified and we have FlexClient, tune the slice
         if (freq_hz && this.flexClient) {
             this.flexClient.tuneSlice(targetChannelIndex, freq_hz);
+            console.log(`[MCP] Tuned slice ${targetChannel.id} to ${freq_hz} Hz`);
         }
 
-        // Enable TX in WSJT-X by sending a command
-        // Note: With HoldTxFreq=true and AutoSeq=true in INI, WSJT-X will autonomously call CQ
-        // We just need to ensure TX is enabled
+        // Configure WSJT-X for CQ calling
+        // Clear any DX call/grid and enable message generation
+        console.log(`[MCP] Configuring ${targetChannel.instanceName} for CQ calling in ${mode} mode`);
+        this.wsjtxManager.configureInstance(targetChannel.instanceName, {
+            mode: mode,
+            dxCall: '',           // Clear DX call
+            dxGrid: '',           // Clear DX grid
+            generateMessages: true  // Enable message generation and TX
+        });
+
+        // Build CQ message and send to WSJT-X
+        const callsign = this.config.station.callsign;
+        const grid = this.config.station.grid;
+        const cqMessage = `CQ ${callsign} ${grid}`;
+
+        console.log(`[MCP] Sending CQ message to ${targetChannel.instanceName}: "${cqMessage}"`);
+        this.wsjtxManager.setFreeText(targetChannel.instanceName, cqMessage, true);
 
         return {
-            status: `Calling CQ on ${targetChannel.band} (channel ${targetChannel.id})`,
+            status: `Calling CQ on ${targetChannel.band} (channel ${targetChannel.id}): ${cqMessage}`,
             band: targetChannel.band,
             freq_hz: targetChannel.freq_hz,
             mode: targetChannel.wsjtx_mode || mode,
